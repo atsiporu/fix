@@ -1,0 +1,7 @@
+[package]
+name = "fix"
+version = "0.1.0"
+authors = ["andrey"]
+
+[dependencies]
+scopefi = { path = "/home/andrey/workspace/rustprojects/scopefi" }

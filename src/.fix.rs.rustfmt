@@ -1,0 +1,233 @@
+extern crate scopefi;
+
+use self::scopefi::stream::PopStream;
+
+pub type FixParsingError = String;
+pub type FixParseIdLenSum = (u32, usize, u32);
+
+#[derive(Debug)]
+pub enum FixMsgType {
+    Logon,
+    Unknown,
+}
+
+pub enum ParseControl {
+    Stop,
+    Continue,
+}
+
+pub trait FixTagHandler<V> {
+    fn tag_value(&mut self, t: u32, v: V) -> ParseControl;
+}
+
+pub trait FixMessage<'a> : FixTagHandler<&'a [u8]> {
+    fn fix_message_start(&mut self, msg_type: FixMsgType);
+    fn fix_message_done(&mut self, res: Result<(), FixParsingError>);
+}
+
+struct FixSessionHandler<'a, 'b: 'a> { 
+    fah: &'a mut FixMessage<'b>,
+}
+
+impl<'a, 'b: 'a> FixSessionHandler<'a, 'b> {
+    fn new(fm: &'a mut FixMessage<'b>) -> FixSessionHandler<'a, 'b> {
+        FixSessionHandler { fah: fm }
+    }
+}
+
+impl<'a, 'b> FixMessage<'b> for FixSessionHandler<'a> {
+    fn fix_message_start(&mut self, msg_type: FixMsgType) {
+        self.fah.fix_message_start(msg_type);
+    }
+    fn fix_message_done(&mut self, res: Result<(), FixParsingError>) {
+        self.fah.fix_message_done(res);
+    }
+}
+impl<'a, V> FixTagHandler<V> for FixSessionHandler<'a> {
+    fn tag_value(&mut self, t: u32, v: V) -> ParseControl {
+        self.fah.tag_value(v)
+    }
+}
+
+pub struct FixClient<'a, 'c: 'a> {
+    conn: &'a mut FixConnection<'c>,
+}
+
+pub struct FixServer<'a, 'c: 'a> {
+    conn: &'a mut FixConnection<'c>,
+}
+
+pub struct FixConnection<'c> {
+    data: &'c PopStream<u8>,
+    state: FixConnectionState,
+}
+
+enum FixConnectionState {
+    Logon,
+}
+
+impl<'c> FixConnection<'c> {
+    pub fn readMessage<T>(&mut self, fm: &mut T) 
+    where for<'a> T: FixMessage<'a> {
+        let bytes = self.data.view();
+        match util::parse_fix_message(bytes, fm) {
+            Ok(Some(size)) => { self.data.consume(size); }
+            Ok(None) => { /* not full message */ }
+            Err(_) => {/* shutdown */}
+        }
+    }
+}
+
+impl FixMsgType {
+    pub fn lookup<'a>(btype: &'a [u8]) -> FixMsgType {
+        match btype.len() {
+            1 => {
+                match btype[0] as char {
+                    'A' => return FixMsgType::Logon,
+                    _ => return FixMsgType::Unknown,
+                }
+            },
+            _ => return FixMsgType::Unknown,
+        }
+
+        FixMsgType::Unknown
+    }
+}
+
+pub mod util {
+    use super::FixMsgType;
+    use super::FixMessage;
+    use super::FixTagHandler;
+    use super::FixParsingError;
+    use super::FixParseIdLenSum;
+    use std::result::Result;
+    use std::fmt::format;
+    const ASCII_ZERO: i32 = ('0' as i32);
+
+    struct Slicer<'a> {
+        buf: &'a[u8],
+        len: usize
+    }
+
+    impl<'a> Slicer<'a> {
+        pub fn buf(&mut self) -> &'a[u8] {
+            &self.buf[self.len..]
+        }
+
+        pub fn consume(&mut self, len: usize) {
+            self.len += len;
+        }
+    }
+
+    pub fn parse_fix_message<T>(buf: &[u8], fm: &mut T) -> Result<Option<(usize)>, FixParsingError>
+    where T: for<'a> FixMessage<'a>
+    {
+        let mut chksum = 0;
+        let mut s = Slicer {buf: buf, len: 0};
+        let required_tags = [8, 9, 35];
+        for eid in &required_tags[..] {
+            //println!("total: {:?} {:?}", total_len, String::from_utf8_lossy(&buf[total_len..]));
+            let res = get_tag(&mut s);
+            match res {
+                Ok(Some((id, v, sum))) if id == 35u32 => {
+                    chksum += sum;
+                    fm.fix_message_start(FixMsgType::lookup(v));
+                },
+                Ok(Some((id, v, sum))) if id == *eid as u32 => {
+                    chksum += sum;
+                },
+                Ok(None) => return Ok(None),
+                Ok(Some(_)) => return Err(format!("Missplaced tag: {}", *eid)),
+                Err(err) => return Err(err),
+            }
+        }
+
+        loop {
+            match get_tag(&mut s) {
+                Ok(Some((id, v, sum))) if id != 10u32 => {
+                    chksum += sum;
+                    fm.tag_value(id, v);
+                },
+                Ok(Some((id, v, sum))) => {
+                    let sum = v.iter().fold(0, |acc: u32, &x| acc * 10 + (x as u32 -'0' as u32));
+                    if sum == (chksum % 256) { 
+                        fm.fix_message_done(Ok(()));
+                        return Ok(Some(s.len));
+                    }
+                    let err_str = format!("Malformed message: calc sum {} != {}", chksum%256, sum);
+                    fm.fix_message_done(Err(err_str));
+                    let err_str = format!("Malformed message: calc sum {} != {}", chksum%256, sum);
+                    return Err(err_str);
+                },
+                Err(err) => return Err(err),
+                Ok(None) => return Ok(None),
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn get_tag<'a> (s: &mut Slicer<'a>) -> Result<Option<(u32, &'a[u8], u32)>, FixParsingError>
+    { 
+        let mut chksum = 0;
+        match try!(get_tag_id(s.buf())) {
+            Some((id, len, sum)) => {
+                s.consume(len);
+                chksum += sum;
+                match get_tag_value(s.buf()) {
+                    Some((v, sum)) => {
+                        s.consume(v.len() + 1/*SOH*/);
+                        chksum += sum;
+                        return Ok(Some((id, v, sum)))
+                    },
+                    None => return Ok(None),
+                }
+            },
+            _ => return Ok(None)
+        }
+
+        Ok(None)
+    }
+
+    
+    pub fn get_tag_value<'a>(buf: &'a [u8]) -> Option<(&'a [u8], u32)> {
+        let mut value_end_pos = 0;
+        let mut sum: u32 = 0;
+        for v in buf {
+            sum += *v as u32;
+            if *v == 0x01u8 {
+                return Some((&buf[0..value_end_pos], sum));
+            }
+            value_end_pos += 1;
+        }
+        None
+    }
+
+    pub fn get_tag_id(buf: &[u8]) -> Result<Option<FixParseIdLenSum>, FixParsingError> {
+        
+        let mut tag_id = 0;
+        let mut count = 0;
+        let mut sum: u32 = 0;
+
+        for v in buf {
+            
+            count += 1;
+            sum += *v as u32;
+
+            if *v == '=' as u8 {
+                return Ok(Some((tag_id, count, sum)))
+            }
+
+            tag_id = tag_id * 10;
+
+            let value = *v as i32 - ASCII_ZERO;
+            if value < 0 { 
+                return Err(String::from("Negative tag"));
+            }
+            tag_id += value as u32;
+            //println!("iter: {:?}", value);
+        }
+
+        return Ok(None);
+    }
+}
