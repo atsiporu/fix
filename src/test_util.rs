@@ -11,9 +11,11 @@ use fix_connection::FixConnectionImpl;
 use super::util;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::cell::UnsafeCell;
+use std::str;
+use std::string::String;
 
 extern crate scopefi;
-use std::cell::UnsafeCell;
 
 const ASCII_ZERO: i32 = ('0' as i32);
 
@@ -29,11 +31,11 @@ pub struct TestFixRemote {
 }
 
 pub struct TestFixMessage {
-    pub msg_type: Option<&'static str>,
+    pub msg_type: Option<String>,
     pub is_replayable: bool,
     pub done: bool,
     pub tag_ids: Vec<u32>,
-    pub tag_values: HashMap<u32, Vec<u8>>,
+    pub tag_values: HashMap<u32, String>,
 }
 
 impl TestFixMessage {
@@ -53,25 +55,25 @@ impl FixTagHandler for TestFixMessage {
     fn tag_value(&mut self, t: u32, v: &[u8])
     {
         self.tag_ids.push(t);
-        let mut my_v = Vec::new();
-        my_v.extend_from_slice(v);
-        self.tag_values.insert(t, my_v);
+        self.tag_values.insert(t, String::from_utf8(Vec::from(v)).unwrap());
     }
 }
 
-impl<T> FixStream<T> for TestFixMessage
-where T: FixAppMsgType  
+impl FixStream for TestFixMessage
 {
+    type MSG_TYPES = ();
     fn fix_message_done(&mut self, res: Result<(), FixStreamException>)
     {
         self.done = true;
     }
 
-    fn fix_message_start(&mut self, msg_type: FixMsgType<T>, is_replayable: bool)
+    fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
     {
         self.is_replayable = is_replayable;
         self.done = false;
-        self.msg_type = Some(msg_type.get_value());
+        let mut tv = vec![0;0];
+        let t = String::from_utf8(Vec::from(msg_type.as_ref())).unwrap();
+        self.msg_type = Some(t);
     }
 }
 
@@ -114,10 +116,10 @@ impl<'b> FixTransport for TestFixTransport<'b> {
     }
 }
 
-impl<T> FixStream<T> for TestFixRemote
-where T: FixAppMsgType 
+impl FixStream for TestFixRemote
 {
-    fn fix_message_start(&mut self, msg_type: FixMsgType<T>, is_replayable: bool)
+    type MSG_TYPES = ();
+    fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
     {
         self.sum = 0; // start accumulation of checksum
         
@@ -131,8 +133,8 @@ where T: FixAppMsgType
         self.len = 0; // start accumulation of length
        
         // message type
-        let v = msg_type.get_value();
-        self.tag_value(35, &v.to_string().into_bytes());
+        let v = msg_type.as_ref();
+        self.tag_value(35, &v);
     }
 
     fn fix_message_done(&mut self, res: Result<(), FixStreamException>)

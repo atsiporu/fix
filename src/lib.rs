@@ -19,13 +19,15 @@ mod test {
 	use std::rc::Rc;
     use test_util::TestFixMessage;
 
+    /*
     impl FixAppMsgType for () {
         fn lookup(btype: &[u8]) -> Option<Self>
         {
             None
         }
     }
-	
+	*/
+
 	pub struct TestScope<T> {
 		starts: Vec<T>,
 		ends: Vec<T>
@@ -44,8 +46,9 @@ mod test {
 	
 	pub struct TestScope2;
 
-	impl FixStream<()> for TestScope2
+	impl FixStream for TestScope2
     {
+        type MSG_TYPES = ();
 		fn fix_message_start(&mut self, msg_type: FixMsgType<()>, is_replayable: bool)
         {
 			println!("Message start {:?}", msg_type);
@@ -65,7 +68,7 @@ mod test {
 	fn it_scope() {
 		use std::io::prelude;
 		let mut s = TestScope2;
-		s.fix_message_start(FixMsgType::Logon::<()>, false);
+		s.fix_message_start(FixMsgType::Logon, false);
 		s.tag_value(1, &[3u8, 4u8]);
 		s.tag_value(1, &[3u8]);
 		s.fix_message_done(Ok(()));
@@ -110,22 +113,24 @@ mod test {
         let my_fix_type = "TT".to_string();
 		{
 			let mut rs = r.borrow_mut();
-			rs.fix_message_start(FixMsgType::Logon::<()>, false);
+			rs.fix_message_start(FixMsgType::Logon, false);
 			rs.tag_value(58, "Hello".to_string().as_bytes());
-			(rs as RefMut<FixStream<()>>).fix_message_done(Ok(()));
+			rs.fix_message_done(Ok(()));
 			
-            rs.fix_message_start(FixMsgType::Unknown::<()>(my_fix_type.as_bytes()), false);
+            rs.fix_message_start(FixMsgType::Unknown(my_fix_type.as_bytes()), false);
 			rs.tag_value(58, "Hello".to_string().as_bytes());
-			(rs as RefMut<FixStream<()>>).fix_message_done(Ok(()));
+			rs.fix_message_done(Ok(()));
 		}
 
         //let fc = &mut fc as &mut FixInChannel;
         
         let res = fc.read_fix_message(&mut fmh);
-        let res = fc.read_fix_message(&mut fmh);
-		
-        assert_eq!(Some("TT"), fmh.msg_type);
+        // session level message not communicated
+        assert_eq!(None, fmh.msg_type);
 
-        println!("Result: {:?}", fmh.msg_type);
+        let res = fc.read_fix_message(&mut fmh);
+        // application level message communicated
+        assert_eq!(Some("TT".to_string()), fmh.msg_type);
+        assert_eq!(&"Hello".to_string(), fmh.tag_values.get(&58).unwrap());
 	}
 }

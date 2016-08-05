@@ -8,11 +8,15 @@ impl FixTagHandler for NullFixMessage {
     fn tag_value(&mut self, t: u32, v: &[u8]) { }
 }
 
-impl<T> FixStream<T> for NullFixMessage
-where T: FixAppMsgType
+impl FixAppMsgType for () {
+    fn lookup(btype: &[u8]) -> Option<Self> where Self: Sized { None }
+}
+
+impl FixStream for NullFixMessage
 {
+    type MSG_TYPES = ();
     fn fix_message_done(&mut self, res: Result<(), FixStreamException>) {}
-    fn fix_message_start(&mut self, msg_type: FixMsgType<T>, is_replayable: bool)
+    fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
     {
     }
 }
@@ -54,12 +58,11 @@ impl<'a, T:'a + FixTransport> FixConnection for FixClient<'a, T>
     }
 }
 
-pub struct FixSessionHandler<'a, M, S, T> 
-where M: FixAppMsgType, S: 'a + FixStream<M>, T: 'a + FixTransport
+pub struct FixSessionHandler<'a, S, T> 
+where S: 'a + FixStream, T: 'a + FixTransport
 {
     fc: &'a FixConnectionImpl<T>,
     app_handler: Option<&'a mut S>,
-    _phantom: PhantomData<M>,
 }
 
 
@@ -74,11 +77,11 @@ impl<T: FixTransport> FixConnectionImpl<T> {
         }
     }
 
-    pub fn read_message<M, S>(&mut self, fm: &mut S) 
-    where M: FixAppMsgType, S: FixStream<M>
+    pub fn read_message<S>(&mut self, fm: &mut S) 
+    where S: FixStream
     {
         let parse_result = {
-            let mut fsh = FixSessionHandler { fc: self, app_handler: Some(fm), _phantom: PhantomData };
+            let mut fsh = FixSessionHandler { fc: self, app_handler: Some(fm) };
             super::util::parse_fix_message(self.transport.view(), &mut fsh)
         };
         
@@ -100,14 +103,14 @@ impl<T: FixTransport> FixConnectionImpl<T> {
 impl<P> FixInChannel for FixConnectionImpl<P> 
 where P: FixTransport
 {
-    fn read_fix_message<M, T>(&mut self, fm: &mut T) 
-    where M: FixAppMsgType, T: FixStream<M>
+    fn read_fix_message<T>(&mut self, fm: &mut T) 
+    where T: FixStream
     {
         self.read_message(fm);
     }
 }
 
-impl<M: FixAppMsgType, T: FixTransport>  FixOutChannel<M> for FixConnectionImpl<T>
+impl<T: FixTransport>  FixOutChannel for FixConnectionImpl<T>
 {
     type FMS = NullFixMessage;
 
@@ -124,10 +127,11 @@ impl<T: FixTransport>  FixErrorChannel for FixConnectionImpl<T>
     }
 }
 
-impl<'a, M, S, T> FixStream<M> for FixSessionHandler<'a, M, S, T>
-where M: FixAppMsgType, S: 'a + FixStream<M>, T: 'a + FixTransport
+impl<'a, S, T> FixStream for FixSessionHandler<'a, S, T>
+where S: 'a + FixStream, T: 'a + FixTransport
 {
-    fn fix_message_start(&mut self, msg_type: FixMsgType<M>, is_replayable: bool)
+    type MSG_TYPES = S::MSG_TYPES;
+    fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
     {
         match msg_type {
             FixMsgType::Logon => {
@@ -149,8 +153,8 @@ where M: FixAppMsgType, S: 'a + FixStream<M>, T: 'a + FixTransport
     }
 }
 
-impl<'a, M, S, T> FixTagHandler for FixSessionHandler<'a, M, S, T>
-where M: FixAppMsgType, S: 'a + FixStream<M>, T: 'a + FixTransport
+impl<'a, S, T> FixTagHandler for FixSessionHandler<'a, S, T>
+where S: 'a + FixStream, T: 'a + FixTransport
 {
     fn tag_value(&mut self, t: u32, v: &[u8]) {
         match self.app_handler {

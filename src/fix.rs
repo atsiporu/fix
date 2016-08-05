@@ -1,3 +1,9 @@
+use std::convert::From;
+use std::convert::Into;
+use std::fmt::Error;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+
 pub type FixStreamException = String;
 pub type FixParseIdLenSum = (u32, usize, u32);
 pub enum PhantomType {}
@@ -18,9 +24,6 @@ where T:FixAppMsgType {
     Unknown(&'a[u8]),
 }
 
-use std::fmt::Error;
-use std::fmt::Debug;
-use std::fmt::Formatter;
 impl<'a, T: FixAppMsgType> Debug for FixMsgType<'a, T> {
     fn fmt(&self, fmtr: &mut Formatter) -> Result<(), Error>
     {
@@ -59,23 +62,22 @@ pub trait FixTagHandler {
     fn tag_value(&mut self, t: u32, v: &[u8]);
 }
 
-pub trait FixStream<T>: FixTagHandler 
-where T: FixAppMsgType
+pub trait FixStream: FixTagHandler 
 {
+    type MSG_TYPES: FixAppMsgType;
     fn fix_message_done(&mut self, res: Result<(), FixStreamException>);
-    fn fix_message_start(&mut self, msg_type: FixMsgType<T>, is_replayable: bool);
+    fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool);
 }
 
-pub trait FixOutChannel<T>
-where T: FixAppMsgType 
+pub trait FixOutChannel
 {
     type FMS;
     fn get_out_stream(&mut self) -> &mut Self::FMS
-        where Self::FMS: FixStream<T>;
+        where Self::FMS: FixStream;
 }
 
 pub trait FixInChannel {
-    fn read_fix_message<M, T>(&mut self, &mut T) where T: FixStream<M>, M: FixAppMsgType;
+    fn read_fix_message<T>(&mut self, &mut T) where T: FixStream;
 }
 
 pub trait FixErrorChannel {
@@ -90,6 +92,9 @@ pub trait FixSessionControl {
 }
 
 pub trait CustomHeaderInjector : FixTagHandler {} 
+
+pub trait FixEnvironment {
+}
 
 pub trait FixTransport {
     fn connect<F>(&self, on_success: F) where F: Fn() -> ();
@@ -132,6 +137,65 @@ where T: FixAppMsgType
 }
 */
 
+impl<'b, 'a:'b, T> From<&'a[u8]> for FixMsgType<'b, T>
+where T: FixAppMsgType
+{
+    fn from(btype: &'a[u8]) -> Self 
+    {
+        match btype.len() {
+            1 => {
+                match btype[0] as char {
+                    'A' => return FixMsgType::Logon,
+                    _ => return FixMsgType::Unknown(&btype),
+                }
+            },
+            _ => return FixMsgType::Unknown(&btype),
+        }
+
+        FixMsgType::Unknown(&btype)
+    }
+}
+
+impl<'b, T> AsRef<[u8]> for FixMsgType<'b, T>
+where T: FixAppMsgType
+{
+    fn as_ref(&self) -> &[u8]
+    {
+        match *self {
+            FixMsgType::Logon => {
+                return "A".as_bytes()
+            },
+            FixMsgType::Unknown(t) => {
+                return t;
+            },
+            _ => {
+                return "Unknown".as_bytes()
+            },
+        }
+    }
+}
+
+/*
+impl<'a, T> Into<FixMsgType<'a, T>> for &'a[u8]
+where T: FixAppMsgType
+{
+    fn into(self) -> &'a[u8] 
+    {
+        match self {
+            FixMsgType::Logon => {
+                return "A".as_bytes()
+            },
+            FixMsgType::Unknown(t) => {
+                return t;
+            },
+            _ => {
+                return "Unknown".as_bytes()
+            },
+        }
+    }
+}
+*/
+
 impl<'b, T> FixMsgType<'b,T>
 where T: FixAppMsgType {
     pub fn is_session_level(msg_type: FixMsgType<T>) -> bool {
@@ -145,26 +209,19 @@ where T: FixAppMsgType {
             _ => false,
         }
     }
-    pub fn lookup<'a: 'b>(btype: &'a [u8]) -> FixMsgType<T> {
-        match btype.len() {
-            1 => {
-                match btype[0] as char {
-                    'A' => return FixMsgType::Logon,
-                    _ => return FixMsgType::Unknown(&btype),
-                }
-            },
-            _ => return FixMsgType::Unknown(&btype),
-        }
-
-        FixMsgType::Unknown(&btype)
-    }
-    pub fn get_value(self) -> &'static str {
+    
+    pub fn _get_value<'a>(self) -> &'a[u8]
+    where 'b:'a 
+    {
         match self {
             FixMsgType::Logon => {
-                return "A"
+                return "A".as_bytes()
+            },
+            FixMsgType::Unknown(t) => {
+                return t;
             },
             _ => {
-                return "Unknown"
+                return "Unknown".as_bytes()
             },
         }
     }

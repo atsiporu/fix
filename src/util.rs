@@ -27,19 +27,20 @@ impl<'a> Slicer<'a> {
     }
 }
 
-pub fn parse_fix_message<M, T>(buf: &[u8], fmh: &mut T) -> Result<Option<(usize)>, FixStreamException>
-where M: FixAppMsgType, T: FixStream<M>
+pub fn parse_fix_message<T>(buf: &[u8], fmh: &mut T) -> Result<Option<(usize)>, FixStreamException>
+where T: FixStream
 {
+    //println!("msg: {:?}", String::from_utf8_lossy(buf));
     let mut chksum = 0;
     let mut s = Slicer {buf: buf, len: 0};
     let required_tags = [8, 9, 35];
     for eid in &required_tags[..] {
-        //println!("total: {:?} {:?}", total_len, String::from_utf8_lossy(&buf[total_len..]));
+        //println!("total: {:?}", String::from_utf8_lossy(s.buf()));
         let res = get_tag(&mut s);
         match res {
             Ok(Some((id, v, sum))) if id == 35u32 => {
                 chksum += sum;
-                fmh.fix_message_start(FixMsgType::lookup(v), true);
+                fmh.fix_message_start(FixMsgType::from(v), true);
                 break;
             },
             Ok(Some((id, _, sum))) if id == *eid as u32 => {
@@ -146,7 +147,7 @@ pub fn put_tag_id_eq(tag_id: u32, to: &mut Vec<u8>) -> (u32, u32)
     let pos = to.len();
     let mut tag_id = tag_id;
     while tag_id > 0 {
-        let v = (tag_id % 10) as u8 + ' ' as u8;
+        let v = (tag_id % 10) as u8 + '0' as u8;
         to.insert(pos, v);
         sum += v as u32;
         len += 1;
@@ -170,10 +171,11 @@ pub struct FixMessageWriter {
     sum: u32,
     buf: Vec<u8>,
 }
-impl<T> FixStream<T> for FixMessageWriter
-where T: FixAppMsgType
+impl FixStream for FixMessageWriter
 {
-    fn fix_message_start(&mut self, msg_type: FixMsgType<T>, is_replayable: bool)
+    type MSG_TYPES = ();
+
+    fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
     {
     }
 
