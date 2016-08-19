@@ -5,6 +5,7 @@ use fix::FixTagHandler;
 use fix::FixStreamException;
 use fix::FixParseIdLenSum;
 use fix::FixTransport;
+use fix::FixEnvironment;
 use std::result::Result;
 use std::fmt::format;
 use fix_connection::FixConnectionImpl;
@@ -14,10 +15,15 @@ use std::collections::HashMap;
 use std::cell::UnsafeCell;
 use std::str;
 use std::string::String;
+use std::time::Duration;
+use fix::TimerHandler;
 
 extern crate scopefi;
 
 const ASCII_ZERO: i32 = ('0' as i32);
+
+pub struct TestFixEnvironment {}
+pub struct TestFixTimerHandler {}
 
 pub struct TestFixTransport<'b> {
     remote: &'b RefCell<TestFixRemote>,
@@ -89,18 +95,37 @@ impl TestFixRemote {
 }
 
 impl<'b> TestFixTransport<'b> {
-    pub fn new<'a:'b>(remote: &'a RefCell<TestFixRemote>) -> FixConnectionImpl<TestFixTransport<'b>> {
+    pub fn new<'a:'b>(remote: &'a RefCell<TestFixRemote>) -> FixConnectionImpl<TestFixTransport<'b>, TestFixEnvironment> {
         let tft = TestFixTransport {
             remote: remote,
         };
 
-        FixConnectionImpl::new(tft)
+        let env = TestFixEnvironment {};
+
+        FixConnectionImpl::new(tft, env)
     }
 }
 
-impl<'b> FixTransport for TestFixTransport<'b> {
-    fn connect<F>(&self, on_success: F) where F: Fn() -> () {
-    
+impl TimerHandler for TestFixTimerHandler {
+    fn cancel(self) {
+    }
+}
+
+impl FixEnvironment for TestFixEnvironment
+{
+    type TH = TestFixTimerHandler;
+    fn set_timeout<F>(&mut self, on_timeout: F, duration: Duration) -> Self::TH
+        where F: FnMut() -> ()
+    {
+        TestFixTimerHandler {}
+    }
+}
+
+impl<'b> FixTransport for TestFixTransport<'b>
+{
+    fn connect<F>(&self, on_success: F) where F: Fn() -> ()
+    {
+        on_success();
     }
 
     fn view(&self) -> &[u8] {

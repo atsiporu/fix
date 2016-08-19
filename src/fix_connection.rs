@@ -21,24 +21,30 @@ impl FixStream for NullFixMessage
     }
 }
 
-pub struct FixClient<'a, T:'a + FixTransport> {
-    conn: &'a mut FixConnectionImpl<T>,
-}
-
-pub struct FixServer<'a, T:'a + FixTransport> {
-    conn: &'a mut FixConnectionImpl<T>,
-}
-
-pub struct FixConnectionImpl<T> 
-where T: FixTransport
+pub struct FixClient<'a, T, E> 
+where T: 'a + FixTransport, E: 'a + FixEnvironment
 {
+    conn: &'a mut FixConnectionImpl<T, E>,
+}
+
+pub struct FixServer<'a, T, E>
+where T: 'a + FixTransport, E: 'a + FixEnvironment
+{
+    conn: &'a mut FixConnectionImpl<T, E>,
+}
+
+pub struct FixConnectionImpl<T, E> 
+where T: FixTransport, E: FixEnvironment
+{
+    environment: E,
+    transport: T,
     in_state: FixInState,
     out_state: FixOutState,
-    transport: T,
     out_stream: NullFixMessage,
 }
 
-impl<'a, T:'a + FixTransport> FixConnection for FixServer<'a, T>
+impl<'a, T, E> FixConnection for FixServer<'a, T, E>
+where T: 'a + FixTransport, E: 'a + FixEnvironment
 {
     fn connect(&mut self)
     {
@@ -48,7 +54,8 @@ impl<'a, T:'a + FixTransport> FixConnection for FixServer<'a, T>
     }
 }
 
-impl<'a, T:'a + FixTransport> FixConnection for FixClient<'a, T>
+impl<'a, T, E> FixConnection for FixClient<'a, T, E>
+where T: 'a + FixTransport, E: 'a + FixEnvironment
 {
     fn connect(&mut self)
     {
@@ -58,18 +65,21 @@ impl<'a, T:'a + FixTransport> FixConnection for FixClient<'a, T>
     }
 }
 
-pub struct FixSessionHandler<'a, S, T> 
-where S: 'a + FixStream, T: 'a + FixTransport
+pub struct FixSessionHandler<'a, S, T, E> 
+where S: 'a + FixStream, T: 'a + FixTransport, E: 'a + FixEnvironment
 {
-    fc: &'a FixConnectionImpl<T>,
+    fc: &'a FixConnectionImpl<T, E>,
     app_handler: Option<&'a mut S>,
 }
 
 
-impl<T: FixTransport> FixConnectionImpl<T> {
-    pub fn new(transport: T) -> FixConnectionImpl<T>
+impl<T, E> FixConnectionImpl<T, E>
+where T: FixTransport, E: FixEnvironment
+{
+    pub fn new(transport: T, environment: E) -> FixConnectionImpl<T, E>
     {
         FixConnectionImpl {
+            environment: environment,
             transport: transport,
             in_state: FixInState::Disconnected,
             out_state: FixOutState::Disconnected,
@@ -90,27 +100,21 @@ impl<T: FixTransport> FixConnectionImpl<T> {
             Ok(None) => { /* not full message */ }
             Err(_) => {/* shutdown */}
         }
-
-        /*
-        let bytes = match self.transport {
-            Some(ref transport) => transport.view(),
-            None => &vec![0;0], // if transport is None pretend that there is no bytes to read
-        };
-        */
     }
 }
 
-impl<P> FixInChannel for FixConnectionImpl<P> 
-where P: FixTransport
+impl<T, E> FixInChannel for FixConnectionImpl<T, E> 
+where T: FixTransport, E: FixEnvironment
 {
-    fn read_fix_message<T>(&mut self, fm: &mut T) 
-    where T: FixStream
+    fn read_fix_message<S>(&mut self, fm: &mut S) 
+    where S: FixStream
     {
         self.read_message(fm);
     }
 }
 
-impl<T: FixTransport>  FixOutChannel for FixConnectionImpl<T>
+impl<T, E>  FixOutChannel for FixConnectionImpl<T, E>
+where T: FixTransport, E: FixEnvironment
 {
     type FMS = NullFixMessage;
 
@@ -120,15 +124,16 @@ impl<T: FixTransport>  FixOutChannel for FixConnectionImpl<T>
     }
 }
 
-impl<T: FixTransport>  FixErrorChannel for FixConnectionImpl<T>
+impl<T, E>  FixErrorChannel for FixConnectionImpl<T, E>
+where T: FixTransport, E: FixEnvironment
 {
     fn error(&mut self, e: FixStreamException)
     {
     }
 }
 
-impl<'a, S, T> FixStream for FixSessionHandler<'a, S, T>
-where S: 'a + FixStream, T: 'a + FixTransport
+impl<'a, S, T, E> FixStream for FixSessionHandler<'a, S, T, E>
+where S: 'a + FixStream, T: 'a + FixTransport, E: 'a + FixEnvironment
 {
     type MSG_TYPES = S::MSG_TYPES;
     fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
@@ -153,8 +158,8 @@ where S: 'a + FixStream, T: 'a + FixTransport
     }
 }
 
-impl<'a, S, T> FixTagHandler for FixSessionHandler<'a, S, T>
-where S: 'a + FixStream, T: 'a + FixTransport
+impl<'a, S, T, E> FixTagHandler for FixSessionHandler<'a, S, T, E>
+where S: 'a + FixStream, T: 'a + FixTransport, E: 'a + FixEnvironment
 {
     fn tag_value(&mut self, t: u32, v: &[u8]) {
         match self.app_handler {
