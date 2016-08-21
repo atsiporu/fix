@@ -6,7 +6,6 @@ use fix::FixStreamException;
 use fix::FixParseIdLenSum;
 use std::result::Result;
 use std::fmt::format;
-use fix_connection::NullFixMessage;
 
 const ASCII_ZERO: i32 = ('0' as i32);
 const SOH: u8 = '\x01' as u8;

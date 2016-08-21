@@ -1,5 +1,5 @@
 mod fix;
-mod fix_connection;
+mod connection;
 mod util;
 mod test_util;
 

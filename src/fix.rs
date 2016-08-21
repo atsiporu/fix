@@ -1,3 +1,6 @@
+/*!
+  Defines main iterfaces used by FIX applications
+ */
 use std::convert::From;
 use std::convert::Into;
 use std::fmt::Error;
@@ -8,10 +11,13 @@ use std::time::Duration;
 pub type FixStreamException = String;
 pub type FixParseIdLenSum = (u32, usize, u32);
 
+/// Application level message types
 pub trait FixAppMsgType {
 	fn lookup(btype: &[u8]) -> Option<Self> where Self: Sized;
 }
 
+/// Session level message types
+#[derive(Debug)]
 pub enum FixMsgType<'a, T>
 where T:FixAppMsgType {
 	Logon,
@@ -24,14 +30,7 @@ where T:FixAppMsgType {
 	Unknown(&'a[u8]),
 }
 
-impl<'a, T: FixAppMsgType> Debug for FixMsgType<'a, T> {
-	fn fmt(&self, fmtr: &mut Formatter) -> Result<(), Error>
-	{
-		Ok(())
-	}
-}
-
-
+/// "Outgoing" connection state
 #[derive(Debug)]
 pub enum FixOutState {
 	Disconnected,
@@ -42,6 +41,7 @@ pub enum FixOutState {
 	Lagging,
 }
 
+/// "Incoming" connection state
 #[derive(Debug)]
 pub enum FixInState {
 	Disconnected,
@@ -50,6 +50,9 @@ pub enum FixInState {
 	Connected,
 }
 
+/// To control the parsing of FIX messages
+/// so that we can stop or error out early in the process
+/// Not using this for now but it might be a useful thing
 #[derive(Debug)]
 pub enum ParseControl {
 	Error(FixStreamException),
@@ -58,10 +61,14 @@ pub enum ParseControl {
 	Skip,
 }
 
+/// Tag-value processor, required to parse tag-value stream
 pub trait FixTagHandler {
 	fn tag_value(&mut self, t: u32, v: &[u8]);
 }
 
+/// FIX stream defines a stream of tag-value pairs with additional message boundaries
+/// User should expect to get fix_message_start, followed by a number of tag_value calls
+/// followed by fix_message_done
 pub trait FixStream: FixTagHandler 
 {
 	type MSG_TYPES: FixAppMsgType;
@@ -69,6 +76,7 @@ pub trait FixStream: FixTagHandler
 	fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool);
 }
 
+/// Output channel provides the "outgoing" stream.
 pub trait FixOutChannel
 {
 	type FMS;
@@ -76,14 +84,22 @@ pub trait FixOutChannel
 		where Self::FMS: FixStream;
 }
 
+/// Input channel provides means to read incoming fix message onto the provided by
+/// user stream. Usual use case when user (fix application) is ready to read another
+/// fix message, it woud call read_fix_message providing the FixStream
 pub trait FixInChannel {
 	fn read_fix_message<T>(&mut self, &mut T) where T: FixStream;
 }
 
+/// If fix application determines that there is an unrecovable exception for the 
+/// ongoing fix session it should communicate to underlying fix "transport" layer
+/// via calling error on FixErrorChannel
 pub trait FixErrorChannel {
 	fn error(&mut self, FixStreamException); // TODO: Think
 }
 
+/// FixApplication is configured with session control object that allows
+/// start/end fix session as well as query and force expected incoming sequnce
 pub trait FixSessionControl {
 	fn start_session(&mut self);
 	fn end_session(&mut self);
@@ -91,16 +107,22 @@ pub trait FixSessionControl {
 	fn get_expected_incoming_seq(&mut self) -> u32;
 }
 
+/// FixApplication may choose to configure custom header tags that will be 
+/// constant and present in each subsequent fix message sent by fix "transport"
 pub trait CustomHeaderInjector : FixTagHandler {} 
 
-pub trait TimerHandler {
+/// TimerHandler that allows to cancel previously scheduled timeout
+pub trait FixTimerHandler {
     fn cancel(self);
 }
 
-pub trait FixEnvironment {
-    type TH: TimerHandler;
+/// Facility to provide fix "transport" with ability to set timeouts
+/// It abstracts the actual implementation of timers. 
+/// ASUMPTION!!! Once timer is set it keeps firing until canceled
+pub trait FixTimerFactory {
+    type TH: FixTimerHandler;
 	fn set_timeout<F>(&mut self, on_timeout: F, duration: Duration) -> Self::TH
-	   where F: FnMut() -> ();
+	   where F: Fn() -> () + Send;
 }
 
 pub trait FixTransport {
@@ -110,10 +132,14 @@ pub trait FixTransport {
 	fn write(&self, buf: &[u8]) -> usize;
 }
 
-pub trait FixConnection {
+/// Abstraction representing either FixClient or FixServer
+/// The former initiates connection to the listening remote site.
+/// The latter listens for incoming connections. You can be one or the other.
+pub trait FixService {
 	fn connect(&mut self);
 }
 
+/// Every FixApplication has to implement this trait
 pub trait FixApplication {
 }
 
