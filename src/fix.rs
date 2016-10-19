@@ -119,9 +119,9 @@ pub trait FixTimerHandler {
 /// Facility to provide fix "transport" with ability to set timeouts
 /// It abstracts the actual implementation of timers. 
 /// ASUMPTION!!! Once timer is set it keeps firing until canceled
-pub trait FixTimerFactory {
-    type TH: FixTimerHandler;
-	fn set_timeout<F>(&mut self, on_timeout: F, duration: Duration) -> Self::TH
+pub trait FixTimerFactory
+{
+	fn set_timeout<F>(&mut self, on_timeout: F, duration: Duration) -> Box<FixTimerHandler>
 	   where F: Fn() -> () + Send;
 }
 

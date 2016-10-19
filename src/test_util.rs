@@ -10,25 +10,37 @@ use std::result::Result;
 use std::fmt::format;
 use connection::FixConnection;
 use super::util;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::str;
 use std::string::String;
 use std::time::{Duration, SystemTime};
 use fix::FixTimerHandler;
-use std::thread::{self, Thread};
-use std::sync::mpsc::{self, TryRecvError, Sender, Receiver};
+use std::rc::Rc;
+use std::ptr;
 
-
-extern crate scopefi;
+extern crate sentinel_list;
+use self::sentinel_list::{List, ListHandle};
 
 const ASCII_ZERO: i32 = ('0' as i32);
 
-pub struct TestFixEnvironment {}
-pub struct TestFixTimerHandler
+pub struct TestFixEnvironment
 {
-	cancel_signal: Sender<()>,
+    now: SystemTime,
+    timers: List<TestFixTimerDesc>,
+}
+
+pub struct TestFixTimerDesc
+{
+    d: Duration,
+    last: SystemTime,
+    on_timeout: Box<Fn()->()>,
+}
+
+pub struct TestFixTimerHandler<T>
+where T: ListHandle<TestFixTimerDesc>
+{
+    timerh: T,
 }
 
 pub struct TestFixTransport<'b> {
@@ -48,6 +60,30 @@ pub struct TestFixMessage {
 	pub done: bool,
 	pub tag_ids: Vec<u32>,
 	pub tag_values: HashMap<u32, String>,
+}
+
+impl TestFixEnvironment
+{
+    pub fn new() -> TestFixEnvironment {
+		TestFixEnvironment {
+            now: SystemTime::now(),
+            timers: List::new(),
+        }
+    }
+
+    pub fn run_for(&mut self, d: Duration)
+    {
+        /*
+        for th in self.timers.iter_mut() {
+            self.now += d;
+            let num = (d.as_secs() * 1000_000_000 + d.subsec_nanos() as u64) / (th.d.as_secs() * 1000_000_000 + th.d.subsec_nanos() as u64);
+            for _ in 0..num {
+                // fire
+                th.last += th.d;
+            }
+        }
+        */
+    }
 }
 
 impl TestFixMessage {
@@ -106,54 +142,36 @@ impl<'b> TestFixTransport<'b> {
 			remote: remote,
 		};
 
-		let env = TestFixEnvironment {};
+		let env = TestFixEnvironment::new();
 
 		FixConnection::new(tft, env)
 	}
 }
 
-impl FixTimerHandler for TestFixTimerHandler {
-
+impl<T> FixTimerHandler for TestFixTimerHandler<T>
+where T: ListHandle<TestFixTimerDesc>
+{
 	fn cancel(self) {
-		self.cancel_signal.send(());
+        self.timerh.unlink();
 	}
 }
 
 impl FixTimerFactory for TestFixEnvironment
 {
-	type TH = TestFixTimerHandler;
-	fn set_timeout<F>(&mut self, on_timeout: F, duration: Duration) -> Self::TH
-		where F: 'static + Fn() -> () + Send
+	fn set_timeout<F>(&mut self, on_timeout: F, duration: Duration) -> Box<FixTimerHandler>
+		where F: Fn() -> () + 'static
 	{
-		let (tx, rx) = mpsc::channel();
-		let timer_thread = thread::spawn(move || {
-			let mut now = SystemTime::now();
-			loop {
-				match rx.try_recv() {
-					Ok(_) | Err(TryRecvError::Disconnected) => {
-						// timeout canceled
-						break;
-					},
-					Err(_) => {} // other error continue
-				};
-				match now.elapsed() {
-					Ok(elapsed) => {
-						if elapsed > duration {
-							on_timeout();
-							now = SystemTime::now();
-						}
-						thread::sleep(duration / 3);
-					},
-					Err(err) => {
-						println!("{}", err);
-					},
-				};
-			}
-		});
+        let mut desc = TestFixTimerDesc {
+            d: duration,
+            last: self.now,
+            on_timeout: Box::new(on_timeout),
+		};
 
-		TestFixTimerHandler {
-			cancel_signal: tx
-		}
+        let h = self.timers.push_tail(desc);
+
+        box TestFixTimerHandler {
+            timerh: h,
+        }
 	}
 }
 

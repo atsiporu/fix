@@ -1,11 +1,15 @@
-mod fix;
-mod connection;
-mod util;
+#![feature(box_patterns)]
+#![feature(conservative_impl_trait)] 
+#![feature(box_syntax)]
+
+pub mod fix;
+pub mod connection;
+pub mod util;
 mod test_util;
 
 #[cfg(test)]
 mod test {
-	use fix::FixMsgType;
+	use fix::{FixMsgType, FixTimerFactory};
 	use fix::FixAppMsgType;
 	use fix::FixStream;
 	use fix::FixInChannel;
@@ -17,7 +21,8 @@ mod test {
 	use std::cell::RefCell;
 	use std::cell::RefMut;
 	use std::rc::Rc;
-    use test_util::TestFixMessage;
+    use test_util::{TestFixMessage, TestFixEnvironment};
+    use std::time::Duration;
 
     /*
     impl FixAppMsgType for () {
@@ -133,4 +138,14 @@ mod test {
         assert_eq!(Some("TT".to_string()), fmh.msg_type);
         assert_eq!(&"Hello".to_string(), fmh.tag_values.get(&58).unwrap());
 	}
+	
+    #[test]
+    fn test_fix_environment() {
+        let env = &mut TestFixEnvironment::new();
+        let trigger = || {
+            println!("Timeout!");
+        };
+        env.set_timeout(trigger, Duration::from_secs(10));
+        env.run_for(Duration::from_secs(20));
+    }
 }

@@ -1,7 +1,13 @@
 [package]
-name = "fix"
+name = "fixr"
 version = "0.1.0"
 authors = ["andrey"]
 
 [dependencies]
-scopefi = { path = "/home/andrey/workspace/rustprojects/scopefi" }
+sentinel_list = { path = "/home/andrey/workspace/rustprojects/sentinel_list" }
+
+[lib]
+name = "fixr"
+
+[[bin]]
+name = "main"
