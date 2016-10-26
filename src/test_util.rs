@@ -9,6 +9,7 @@ use fix::FixTimerFactory;
 use std::result::Result;
 use std::fmt::format;
 use connection::FixConnection;
+use connection::ConnectionType;
 use super::util;
 use std::collections::HashMap;
 use std::cell::{RefCell, UnsafeCell};
@@ -26,21 +27,21 @@ const ASCII_ZERO: i32 = ('0' as i32);
 
 pub struct TestFixEnvironment
 {
-    now: SystemTime,
-    timers: List<TestFixTimerDesc>,
+	now: SystemTime,
+	timers: List<TestFixTimerDesc>,
 }
 
 pub struct TestFixTimerDesc
 {
-    d: Duration,
-    last: SystemTime,
-    on_timeout: Box<Fn()->()>,
+	d: Duration,
+	last: SystemTime,
+	on_timeout: Box<Fn()->()>,
 }
 
 pub struct TestFixTimerHandler<T>
 where T: ListHandle<TestFixTimerDesc>
 {
-    timerh: T,
+	timerh: T,
 }
 
 pub struct TestFixTransport<'b> {
@@ -64,26 +65,24 @@ pub struct TestFixMessage {
 
 impl TestFixEnvironment
 {
-    pub fn new() -> TestFixEnvironment {
+	pub fn new() -> TestFixEnvironment {
 		TestFixEnvironment {
-            now: SystemTime::now(),
-            timers: List::new(),
-        }
-    }
+			now: SystemTime::now(),
+			timers: List::new(),
+		}
+	}
 
-    pub fn run_for(&mut self, d: Duration)
-    {
-        /*
-        for th in self.timers.iter_mut() {
-            self.now += d;
-            let num = (d.as_secs() * 1000_000_000 + d.subsec_nanos() as u64) / (th.d.as_secs() * 1000_000_000 + th.d.subsec_nanos() as u64);
-            for _ in 0..num {
-                // fire
-                th.last += th.d;
-            }
-        }
-        */
-    }
+	pub fn run_for(&mut self, d: Duration)
+	{
+		for th in self.timers.iter_mut() {
+			self.now += d;
+			let num = (d.as_secs() * 1_000_000_000 + d.subsec_nanos() as u64) / (th.d.as_secs() * 1_000_000_000 + th.d.subsec_nanos() as u64);
+			for _ in 0..num {
+				(th.on_timeout)();
+				th.last += th.d;
+			}
+		}
+	}
 }
 
 impl TestFixMessage {
@@ -144,34 +143,34 @@ impl<'b> TestFixTransport<'b> {
 
 		let env = TestFixEnvironment::new();
 
-		FixConnection::new(tft, env)
-	}
+		FixConnection::new(tft, env, ConnectionType::Initiator)
+    }
 }
 
 impl<T> FixTimerHandler for TestFixTimerHandler<T>
 where T: ListHandle<TestFixTimerDesc>
 {
 	fn cancel(self) {
-        self.timerh.unlink();
+		self.timerh.unlink();
 	}
 }
 
 impl FixTimerFactory for TestFixEnvironment
 {
 	fn set_timeout<F>(&mut self, on_timeout: F, duration: Duration) -> Box<FixTimerHandler>
-		where F: Fn() -> () + 'static
+		where F: Fn() -> () + Send + 'static
 	{
-        let mut desc = TestFixTimerDesc {
-            d: duration,
-            last: self.now,
-            on_timeout: Box::new(on_timeout),
+		let mut desc = TestFixTimerDesc {
+			d: duration,
+			last: self.now,
+			on_timeout: Box::new(on_timeout),
 		};
 
-        let h = self.timers.push_tail(desc);
+		let h = self.timers.push_tail(desc);
 
-        box TestFixTimerHandler {
-            timerh: h,
-        }
+		box TestFixTimerHandler {
+			timerh: h,
+		}
 	}
 }
 

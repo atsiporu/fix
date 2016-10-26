@@ -22,16 +22,9 @@ impl FixAppMsgType for () {
 	fn lookup(btype: &[u8]) -> Option<Self> where Self: Sized { None }
 }
 
-pub struct FixClient<'a, T, E> 
-where T: 'a + FixTransport, E: 'a + FixTimerFactory
-{
-	conn: &'a mut FixConnection<T, E>,
-}
-
-pub struct FixServer<'a, T, E>
-where T: 'a + FixTransport, E: 'a + FixTimerFactory
-{
-	conn: &'a mut FixConnection<T, E>,
+pub enum ConnectionType {
+    Initiator,
+    Acceptor,
 }
 
 pub struct FixConnection<T, E> 
@@ -42,27 +35,28 @@ where T: FixTransport, E: FixTimerFactory
 	in_state: FixInState,
 	out_state: FixOutState,
 	out_stream: NullFixMessage,
+    conn_type: ConnectionType,
 }
 
-impl<'a, T, E> FixService for FixServer<'a, T, E>
-where T: 'a + FixTransport, E: 'a + FixTimerFactory
+impl<T, E> FixService for FixConnection<T, E>
+where T: FixTransport, E: FixTimerFactory
 {
 	fn connect(&mut self)
 	{
-		// TODO: Start listening for logon
-		self.conn.in_state = FixInState::Logon;
-		self.conn.out_state = FixOutState::Disconnected;
-	}
-}
+        match self.conn_type {
+            ConnectionType::Initiator => {
+                // TODO: Open output stream, send logon
+                self.in_state = FixInState::Disconnected;
+                self.out_state = FixOutState::Logon;
+            },
+            ConnectionType::Acceptor => {
+                // TODO: Start listening for logon
+                self.in_state = FixInState::Logon;
+                self.out_state = FixOutState::Disconnected;
+            }
+        }
 
-impl<'a, T, E> FixService for FixClient<'a, T, E>
-where T: 'a + FixTransport, E: 'a + FixTimerFactory
-{
-	fn connect(&mut self)
-	{
-		// TODO: Open output stream, send logon
-		self.conn.in_state = FixInState::Logon;
-		self.conn.out_state = FixOutState::Logon;
+        println!("Connecting... in: {:?} out {:?}", self.in_state, self.out_state);
 	}
 }
 
@@ -77,7 +71,7 @@ where S: 'a + FixStream, T: 'a + FixTransport, E: 'a + FixTimerFactory
 impl<T, E> FixConnection<T, E>
 where T: FixTransport, E: FixTimerFactory
 {
-	pub fn new(transport: T, timers: E) -> FixConnection<T, E>
+	pub fn new(transport: T, timers: E, conn_type: ConnectionType) -> FixConnection<T, E>
 	{
 		FixConnection {
 			timers: timers,
@@ -85,6 +79,7 @@ where T: FixTransport, E: FixTimerFactory
 			in_state: FixInState::Disconnected,
 			out_state: FixOutState::Disconnected,
 			out_stream: NullFixMessage,
+            conn_type: conn_type,
 		}
 	}
 

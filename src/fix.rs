@@ -19,7 +19,7 @@ pub trait FixAppMsgType {
 /// Session level message types
 #[derive(Debug)]
 pub enum FixMsgType<'a, T>
-where T:FixAppMsgType {
+where T: FixAppMsgType {
 	Logon,
 	Logout,
 	SeqReset,
@@ -125,6 +125,8 @@ pub trait FixTimerFactory
 	   where F: Fn() -> () + Send;
 }
 
+/// Transport abstraction. FIX is a stream and thus the most tipical transport is 
+/// TCP however any other stream will do, and as such there is a reson to abstract this.
 pub trait FixTransport {
 	fn connect<F>(&self, on_success: F) where F: Fn() -> ();
 	fn view(&self) -> &[u8];

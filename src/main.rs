@@ -5,7 +5,33 @@ extern crate fixr;
 use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, SystemTime};
-use fixr::fix::{FixTimerFactory, FixTimerHandler};
+use fixr::fix::{FixTransport, FixTimerFactory, FixTimerHandler, FixService};
+use fixr::connection::{FixConnection, ConnectionType};
+
+pub struct TestTransport
+{
+    view: Vec<u8>,
+}
+
+impl FixTransport for TestTransport
+{
+	fn connect<F>(&self, on_success: F) where F: Fn() -> ()
+	{
+		on_success();
+	}
+
+	fn view(&self) -> &[u8] {
+	    &self.view
+    }
+
+	fn consume(&self, len: usize) {
+	}
+
+	fn write(&self, buf: &[u8]) -> usize {
+		0usize
+	}
+}
+
 
 pub struct TestFixTimerHandler
 {
@@ -59,14 +85,41 @@ impl FixTimerFactory for TestFixEnvironment
 	}
 }
 
+use std::env;
 fn main()
 {
-    println!("Hello world!");
+	let args = &mut env::args();
 
-    let env = &mut TestFixEnvironment {};
-    let h = env.set_timeout(|| { println!("On Timeout"); }, Duration::from_secs(5));
+	args.next(); // consume program name
 
-    loop {
-        thread::sleep_ms(100);
-    }
+	if args.len() != 3 {
+		println!("usage: <ip> <port> <-c|-l>");
+		return;
+	}
+
+	let ip = args.next().unwrap();
+	let port = args.next().unwrap();
+	let mode = args.next().unwrap();
+	
+    let transport = TestTransport { view: vec![0]}; 
+    let mut timers = TestFixEnvironment {};
+
+    let (conn_type, _) = match mode.as_str() {
+		"-c" => {
+            (ConnectionType::Initiator, ())
+		},
+		"-l" => {
+            (ConnectionType::Acceptor, ())
+		},
+		_ => {
+			panic!("usage: <ip> <port> <-c|-l>");
+		}
+	};
+    
+    let mut conn = FixConnection::new(transport, timers, conn_type);
+    conn.connect();
+
+	loop {
+		thread::sleep_ms(100);
+	}
 }

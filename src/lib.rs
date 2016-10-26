@@ -2,6 +2,36 @@
 #![feature(conservative_impl_trait)] 
 #![feature(box_syntax)]
 
+/// FIX protocol library.
+/// This library goal is to simplify creation of FIX application.
+/// It's flexible enough to accomodate all common case FIX usage.
+///
+/// Library employs end to end principle and trys to avoid creation of 
+/// any intermediate objects when possible.
+///
+/// The main structure is:
+///
+/// FixApplication <>------ FixService <>------ FixConnection
+///
+/// FixApplication is a user defined fix application
+/// FixService is either FixServer or FixClient the difference is who will 
+/// initiate connection
+///
+/// FixConnection - main state machine responsible for verifying FIX session
+/// states and transitions, as well as enforcing FIX rules such as sequencing and etc.
+///
+/// FixConnection <>------ FixTransport
+///               <>------ FixEnvironment
+/// 
+/// FixTransport - is underlying connection to the other side of fix session.
+/// (for example, in case of TCP it's either TCP client or server that connects to / listens on 
+/// particular end point)
+///
+/// FixEnvironment - "factory" that abstracts creation of different things required for 
+/// successful functioning of FIX machine (i.e. timers, and etc.)
+///
+
+
 pub mod fix;
 pub mod connection;
 pub mod util;
@@ -21,16 +51,17 @@ mod test {
 	use std::cell::RefCell;
 	use std::cell::RefMut;
 	use std::rc::Rc;
-    use test_util::{TestFixMessage, TestFixEnvironment};
-    use std::time::Duration;
+    use std::sync::Arc;
+	use test_util::{TestFixMessage, TestFixEnvironment};
+	use std::time::Duration;
 
-    /*
-    impl FixAppMsgType for () {
-        fn lookup(btype: &[u8]) -> Option<Self>
-        {
-            None
-        }
-    }
+	/*
+	impl FixAppMsgType for () {
+		fn lookup(btype: &[u8]) -> Option<Self>
+		{
+			None
+		}
+	}
 	*/
 
 	pub struct TestScope<T> {
@@ -52,10 +83,10 @@ mod test {
 	pub struct TestScope2;
 
 	impl FixStream for TestScope2
-    {
-        type MSG_TYPES = ();
+	{
+		type MSG_TYPES = ();
 		fn fix_message_start(&mut self, msg_type: FixMsgType<()>, is_replayable: bool)
-        {
+		{
 			println!("Message start {:?}", msg_type);
 			//self.tail(scope);
 		}
@@ -111,41 +142,44 @@ mod test {
 	#[test]
 	fn test_fix_logon() {
 
-        let mut fmh = TestFixMessage::new();
+		let mut fmh = TestFixMessage::new();
 		let r = RefCell::new(test_util::TestFixRemote::new());
 		let mut fc = test_util::TestFixTransport::new(&r);
 		
-        let my_fix_type = "TT".to_string();
+		let my_fix_type = "TT".to_string();
 		{
 			let mut rs = r.borrow_mut();
 			rs.fix_message_start(FixMsgType::Logon, false);
 			rs.tag_value(58, "Hello".to_string().as_bytes());
 			rs.fix_message_done(Ok(()));
 			
-            rs.fix_message_start(FixMsgType::Unknown(my_fix_type.as_bytes()), false);
+			rs.fix_message_start(FixMsgType::Unknown(my_fix_type.as_bytes()), false);
 			rs.tag_value(58, "Hello".to_string().as_bytes());
 			rs.fix_message_done(Ok(()));
 		}
 
-        //let fc = &mut fc as &mut FixInChannel;
-        
-        let res = fc.read_fix_message(&mut fmh);
-        // session level message not communicated
-        assert_eq!(None, fmh.msg_type);
+		//let fc = &mut fc as &mut FixInChannel;
+		
+		let res = fc.read_fix_message(&mut fmh);
+		// session level message not communicated
+		assert_eq!(None, fmh.msg_type);
 
-        let res = fc.read_fix_message(&mut fmh);
-        // application level message communicated
-        assert_eq!(Some("TT".to_string()), fmh.msg_type);
-        assert_eq!(&"Hello".to_string(), fmh.tag_values.get(&58).unwrap());
+		let res = fc.read_fix_message(&mut fmh);
+		// application level message communicated
+		assert_eq!(Some("TT".to_string()), fmh.msg_type);
+		assert_eq!(&"Hello".to_string(), fmh.tag_values.get(&58).unwrap());
 	}
 	
-    #[test]
-    fn test_fix_environment() {
-        let env = &mut TestFixEnvironment::new();
+	#[test]
+	fn test_fix_environment() {
+		let env = &mut TestFixEnvironment::new();
+		let count: *mut _ = &mut 0;
         let trigger = || {
-            println!("Timeout!");
-        };
-        env.set_timeout(trigger, Duration::from_secs(10));
-        env.run_for(Duration::from_secs(20));
-    }
+            *count += 1;
+			println!("Timeout!");
+		};
+		let h = env.set_timeout(trigger, Duration::from_secs(10));
+		env.run_for(Duration::from_secs(20));
+        assert_eq!(2, unsafe { *count })
+	}
 }
