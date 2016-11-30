@@ -6,6 +6,8 @@ use fix::FixStreamException;
 use fix::FixParseIdLenSum;
 use std::result::Result;
 use std::fmt::format;
+use std::marker::PhantomData;
+use fix_tags::{header, body, trailer};
 
 const ASCII_ZERO: i32 = ('0' as i32);
 const SOH: u8 = '\x01' as u8;
@@ -138,10 +140,10 @@ pub fn get_tag_id(buf: &[u8]) -> Result<Option<FixParseIdLenSum>, FixStreamExcep
     return Ok(None);
 }
 
-pub fn put_tag_id_eq(tag_id: u32, to: &mut Vec<u8>) -> (u32, u32)
+pub fn put_tag_id_eq(tag_id: u32, to: &mut Vec<u8>) -> (u32, usize)
 {
     // TODO: Think how to speed this up
-    let mut len = 0u32;
+    let mut len = 0;
     let mut sum = 0u32;
     let pos = to.len();
     let mut tag_id = tag_id;
@@ -158,24 +160,31 @@ pub fn put_tag_id_eq(tag_id: u32, to: &mut Vec<u8>) -> (u32, u32)
     (sum, len)
 }
 
-pub fn put_tag_val_soh(val: &[u8], to: &mut Vec<u8>) -> (u32, u32)
+pub fn put_tag_val_soh(val: &[u8], to: &mut Vec<u8>) -> (u32, usize)
 {
-    let acc = val.into_iter().fold((0u32, 0u32), |mut acc, &v| {acc.0 += v as u32; acc.1 += 1u32; acc}); 
+    let (sum, len) = val.into_iter().fold((0u32, 0u32), |mut acc, &v| {acc.0 += v as u32; acc.1 += 1u32; acc}); 
     to.extend_from_slice(val);
     to.push(SOH);
-    (acc.0 + SOH as u32, acc.1 + 1u32)
+    (sum + SOH as u32, len as usize + 1usize)
 }
 
-pub struct FixMessageWriter {
-    sum: u32,
-    buf: Vec<u8>,
-}
-impl FixStream for FixMessageWriter
+pub struct FixMessageWriter<T>
 {
-    type MSG_TYPES = ();
+    sum: u32,
+    len: usize,
+    buf: Vec<u8>,
+    _phantom: PhantomData<T>,
+}
+impl<T> FixStream for FixMessageWriter<T>
+where T: FixAppMsgType
+{
+    type MSG_TYPES = T;
 
     fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
     {
+        self.sum = 0;
+        self.len = 0;
+        self.tag_value(header::MsgType, msg_type.as_bytes()); 
     }
 
     fn fix_message_done(&mut self, res: Result<(), FixStreamException>)
@@ -183,9 +192,14 @@ impl FixStream for FixMessageWriter
     }
 }
 
-impl FixTagHandler for FixMessageWriter {
+impl<T> FixTagHandler for FixMessageWriter<T> {
     fn tag_value(&mut self, tag: u32, value: &[u8]) {
-        
+        let (sum, len) = put_tag_id_eq(tag, &mut self.buf);
+        self.sum += sum;
+        self.len += len;
+        let (sum, len) = put_tag_val_soh(value, &mut self.buf);
+        self.sum += sum;
+        self.len += len;
     }
 }
 

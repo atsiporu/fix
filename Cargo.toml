@@ -5,6 +5,7 @@ authors = ["andrey"]
 
 [dependencies]
 sentinel_list = { path = "/home/andrey/workspace/rustprojects/sentinel_list" }
+tbr = { path = "/home/andrey/workspace/rustprojects/threadedbufreader" }
 
 [lib]
 name = "fixr"

@@ -1,11 +1,4 @@
-use fix::FixMsgType;
-use fix::FixAppMsgType;
-use fix::FixStream;
-use fix::FixTagHandler;
-use fix::FixStreamException;
-use fix::FixParseIdLenSum;
-use fix::FixTransport;
-use fix::FixTimerFactory;
+use fix::*;
 use std::result::Result;
 use std::fmt::format;
 use connection::FixConnection;
@@ -16,7 +9,6 @@ use std::cell::{RefCell, UnsafeCell};
 use std::str;
 use std::string::String;
 use std::time::{Duration, SystemTime};
-use fix::FixTimerHandler;
 use std::rc::Rc;
 use std::ptr;
 
@@ -24,6 +16,10 @@ extern crate sentinel_list;
 use self::sentinel_list::{List, ListHandle};
 
 const ASCII_ZERO: i32 = ('0' as i32);
+
+pub struct TestFixSessionListener
+{
+}
 
 pub struct TestFixEnvironment
 {
@@ -50,7 +46,7 @@ pub struct TestFixTransport<'b> {
 
 pub struct TestFixRemote {
 	sum: u32,
-	len: u32,
+	len: usize,
 	lenOff: usize,
 	data: UnsafeCell<Vec<u8>>,
 }
@@ -119,7 +115,7 @@ impl FixStream for TestFixMessage
 		self.is_replayable = is_replayable;
 		self.done = false;
 		let mut tv = vec![0;0];
-		let t = String::from_utf8(Vec::from(msg_type.as_ref())).unwrap();
+		let t = String::from_utf8(Vec::from(msg_type.as_bytes())).unwrap();
 		self.msg_type = Some(t);
 	}
 }
@@ -136,14 +132,14 @@ impl TestFixRemote {
 }
 
 impl<'b> TestFixTransport<'b> {
-	pub fn new<'a:'b>(remote: &'a RefCell<TestFixRemote>) -> FixConnection<TestFixTransport<'b>, TestFixEnvironment> {
+	pub fn new<'a:'b>(remote: &'a RefCell<TestFixRemote>) -> FixConnection<TestFixTransport<'b>, TestFixEnvironment, TestFixSessionListener> {
 		let tft = TestFixTransport {
 			remote: remote,
 		};
 
 		let env = TestFixEnvironment::new();
 
-		FixConnection::new(tft, env, ConnectionType::Initiator)
+		FixConnection::new(tft, env, ConnectionType::Initiator, TestFixSessionListener {})
     }
 }
 
@@ -176,7 +172,7 @@ impl FixTimerFactory for TestFixEnvironment
 
 impl<'b> FixTransport for TestFixTransport<'b>
 {
-	fn connect<F>(&self, on_success: F) where F: Fn() -> ()
+	fn connect<F>(&mut self, mut on_success: F) where F: FnMut() -> ()
 	{
 		on_success();
 	}
@@ -185,13 +181,25 @@ impl<'b> FixTransport for TestFixTransport<'b>
 		unsafe {& *self.remote.borrow().data.get()}
 	}
 
-	fn consume(&self, len: usize) {
+	fn consume(&mut self, len: usize) {
 		unsafe {let _: Vec<u8> = (&mut *self.remote.borrow().data.get()).drain(0..len).collect();}
 	}
 
-	fn write(&self, buf: &[u8]) -> usize {
-		0usize
-	}
+    fn write(&mut self, buf: &[u8]) -> usize {
+        buf.len()
+    }
+}
+
+impl FixSessionListener for TestFixSessionListener
+{
+    fn on_request<T>(&mut self, msg_type: FixMsgType<T>)
+    where T: FixAppMsgType
+    {
+    }
+
+    fn on_message_pending(&mut self)
+    {
+    }
 }
 
 impl FixStream for TestFixRemote
@@ -211,7 +219,7 @@ impl FixStream for TestFixRemote
 		self.len = 0; // start accumulation of length
 	   
 		// message type
-		let v = msg_type.as_ref();
+		let v = msg_type.as_bytes();
 		self.tag_value(35, &v);
 	}
 

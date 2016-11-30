@@ -18,17 +18,26 @@ impl FixStream for NullFixMessage
 }
 //////////////////////////////////////////////////////////////////
 
+enum Void {}
+impl FixAppMsgType for Void {
+	fn lookup(btype: &[u8]) -> Option<Self> where Self: Sized
+    {
+        None
+    }
+}
+
 impl FixAppMsgType for () {
 	fn lookup(btype: &[u8]) -> Option<Self> where Self: Sized { None }
 }
 
+#[derive(Debug)]
 pub enum ConnectionType {
     Initiator,
     Acceptor,
 }
 
-pub struct FixConnection<T, E> 
-where T: FixTransport, E: FixTimerFactory
+pub struct FixConnection<T, E, L> 
+where T: FixTransport, E: FixTimerFactory, L: FixSessionListener
 {
 	timers: E,
 	transport: T,
@@ -36,42 +45,22 @@ where T: FixTransport, E: FixTimerFactory
 	out_state: FixOutState,
 	out_stream: NullFixMessage,
     conn_type: ConnectionType,
+    nextInSeq: u32,
+    listener: L,
 }
 
-impl<T, E> FixService for FixConnection<T, E>
-where T: FixTransport, E: FixTimerFactory
+pub struct FixSessionHandler<'a, S, T, E, L> 
+where S: 'a + FixStream, T: 'a + FixTransport, E: 'a + FixTimerFactory, L: 'a + FixSessionListener
 {
-	fn connect(&mut self)
-	{
-        match self.conn_type {
-            ConnectionType::Initiator => {
-                // TODO: Open output stream, send logon
-                self.in_state = FixInState::Disconnected;
-                self.out_state = FixOutState::Logon;
-            },
-            ConnectionType::Acceptor => {
-                // TODO: Start listening for logon
-                self.in_state = FixInState::Logon;
-                self.out_state = FixOutState::Disconnected;
-            }
-        }
-
-        println!("Connecting... in: {:?} out {:?}", self.in_state, self.out_state);
-	}
-}
-
-pub struct FixSessionHandler<'a, S, T, E> 
-where S: 'a + FixStream, T: 'a + FixTransport, E: 'a + FixTimerFactory
-{
-	fc: &'a FixConnection<T, E>,
+	fc: &'a FixConnection<T, E, L>,
 	app_handler: Option<&'a mut S>,
 }
 
 
-impl<T, E> FixConnection<T, E>
-where T: FixTransport, E: FixTimerFactory
+impl<T, E, L> FixConnection<T, E, L>
+where T: FixTransport, E: FixTimerFactory, L: FixSessionListener
 {
-	pub fn new(transport: T, timers: E, conn_type: ConnectionType) -> FixConnection<T, E>
+	pub fn new(transport: T, timers: E, conn_type: ConnectionType, listener: L) -> FixConnection<T, E, L>
 	{
 		FixConnection {
 			timers: timers,
@@ -80,6 +69,8 @@ where T: FixTransport, E: FixTimerFactory
 			out_state: FixOutState::Disconnected,
 			out_stream: NullFixMessage,
             conn_type: conn_type,
+            nextInSeq: 0,
+            listener: listener,
 		}
 	}
 
@@ -99,8 +90,72 @@ where T: FixTransport, E: FixTimerFactory
 	}
 }
 
-impl<T, E> FixInChannel for FixConnection<T, E> 
-where T: FixTransport, E: FixTimerFactory
+impl<T, E, L> FixService for FixConnection<T, E, L>
+where T: FixTransport, E: FixTimerFactory, L: FixSessionListener
+{
+	fn connect(&mut self)
+	{
+        println!("Connecting {:?} in: {:?} out {:?}", self.conn_type, self.in_state, self.out_state);
+        
+        match self.conn_type {
+            ConnectionType::Initiator => {
+                // TODO: Open output stream, send logon
+                self.in_state = FixInState::Disconnected;
+                self.out_state = FixOutState::Logon;
+                
+				let l = &mut self.listener;
+                self.transport.connect(|| {
+                    l.on_request(FixMsgType::Logon as FixMsgType<Void>);
+                });
+            },
+            ConnectionType::Acceptor => {
+                // TODO: Start listening for logon
+                self.in_state = FixInState::Logon;
+                self.out_state = FixOutState::Disconnected;
+                
+                self.transport.connect(|| {
+                    println!("Connection accepted!");
+                });
+            }
+        }
+        println!("Connected {:?} in: {:?} out {:?}", self.conn_type, self.in_state, self.out_state);
+	}
+}
+
+impl<T, E, L> FixSessionControl for FixConnection<T, E, L>
+where T: FixTransport, E: FixTimerFactory, L: FixSessionListener
+{
+	fn start_session(&mut self)
+    {
+    }
+	
+    fn end_session(&mut self)
+    {
+        match self.in_state {
+            FixInState::Disconnected => {
+                // nothing need to be done here
+            },
+            _ => {
+                self.in_state = FixInState::Disconnected;
+                self.out_state = FixOutState::Logout;
+                self.listener.on_request(FixMsgType::Logout as FixMsgType<Void>);
+            },
+        }
+    }
+
+	fn force_expected_incoming_seq(&mut self, seq: u32)
+    {
+        self.nextInSeq = seq;
+    }
+
+	fn get_expected_incoming_seq(&mut self) -> u32
+    {
+        self.nextInSeq
+    }
+}
+
+impl<T, E, L> FixInChannel for FixConnection<T, E, L> 
+where T: FixTransport, E: FixTimerFactory, L: FixSessionListener
 {
 	fn read_fix_message<S>(&mut self, fm: &mut S) 
 	where S: FixStream
@@ -109,8 +164,8 @@ where T: FixTransport, E: FixTimerFactory
 	}
 }
 
-impl<T, E>  FixOutChannel for FixConnection<T, E>
-where T: FixTransport, E: FixTimerFactory
+impl<T, E, L>  FixOutChannel for FixConnection<T, E, L>
+where T: FixTransport, E: FixTimerFactory, L: FixSessionListener
 {
 	type FMS = NullFixMessage;
 
@@ -120,16 +175,16 @@ where T: FixTransport, E: FixTimerFactory
 	}
 }
 
-impl<T, E>  FixErrorChannel for FixConnection<T, E>
-where T: FixTransport, E: FixTimerFactory
+impl<T, E, L>  FixErrorChannel for FixConnection<T, E, L>
+where T: FixTransport, E: FixTimerFactory, L: FixSessionListener
 {
 	fn error(&mut self, e: FixStreamException)
 	{
 	}
 }
 
-impl<'a, S, T, E> FixStream for FixSessionHandler<'a, S, T, E>
-where S: 'a + FixStream, T: 'a + FixTransport, E: 'a + FixTimerFactory
+impl<'a, S, T, E, L> FixStream for FixSessionHandler<'a, S, T, E, L>
+where S: 'a + FixStream, T: 'a + FixTransport, E: 'a + FixTimerFactory, L: 'a + FixSessionListener
 {
 	type MSG_TYPES = S::MSG_TYPES;
 	fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
@@ -154,8 +209,8 @@ where S: 'a + FixStream, T: 'a + FixTransport, E: 'a + FixTimerFactory
 	}
 }
 
-impl<'a, S, T, E> FixTagHandler for FixSessionHandler<'a, S, T, E>
-where S: 'a + FixStream, T: 'a + FixTransport, E: 'a + FixTimerFactory
+impl<'a, S, T, E, L> FixTagHandler for FixSessionHandler<'a, S, T, E, L>
+where S: 'a + FixStream, T: 'a + FixTransport, E: 'a + FixTimerFactory, L: 'a + FixSessionListener
 {
 	fn tag_value(&mut self, t: u32, v: &[u8]) {
 		match self.app_handler {

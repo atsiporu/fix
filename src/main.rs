@@ -1,34 +1,80 @@
 #![feature(box_syntax)]
 
 extern crate fixr;
+extern crate tbr;
 
 use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
-use fixr::fix::{FixTransport, FixTimerFactory, FixTimerHandler, FixService};
+use fixr::fix::*;
 use fixr::connection::{FixConnection, ConnectionType};
+use std::io::prelude::*;
+use std::ptr;
+use std::net::{TcpListener, TcpStream};
+use std::io::ErrorKind;
+use std::sync::atomic::AtomicUsize;
+use tbr::*;
+use std::sync::Arc;
 
 pub struct TestTransport
 {
-    view: Vec<u8>,
+    connector: Box<Fn() -> TcpStream>,
+    tcp: Option<Reader<TcpStream>>,
+    reader: Option<JoinHandle<()>>
 }
 
 impl FixTransport for TestTransport
 {
-	fn connect<F>(&self, on_success: F) where F: Fn() -> ()
+	fn connect<F>(&mut self, mut on_success: F) where F: FnMut() -> ()
 	{
+        let (r, w) = ThreadedBufReader::with_capacity((self.connector)(), 1024);
+        self.reader = Some(thread::spawn(move || {
+            loop {
+                w.fill_buf_local().unwrap();
+                thread::sleep_ms(1);
+            }
+        }));
+
+        self.tcp = Some(r);
 		on_success();
 	}
 
 	fn view(&self) -> &[u8] {
-	    &self.view
+        self.tcp
+            .as_ref()
+            .map_or(&[0;0], |stream| {
+                stream.read()
+            })
     }
 
-	fn consume(&self, len: usize) {
+	fn consume(&mut self, len: usize)
+    {
+        self.tcp
+            .as_ref()
+            .map(|stream| {
+                stream.consume_local(len)
+            });
 	}
 
-	fn write(&self, buf: &[u8]) -> usize {
-		0usize
+	fn write(&mut self, buf: &[u8]) -> usize {
+		let len = buf.len();
+        
+        self.tcp
+            .as_ref()
+            .map_or(0, |stream| {
+                
+                let writer: &mut TcpStream = stream.into();
+                writer.write(buf)
+                      .or_else(|err| {
+                          if err.kind() == ErrorKind::WouldBlock {
+                              Ok(0)
+                          }
+                          else { 
+                              Err(err) 
+                          } 
+                      }).unwrap()
+            })
 	}
 }
 
@@ -46,6 +92,57 @@ impl FixTimerHandler for TestFixTimerHandler
 
 pub struct TestFixEnvironment
 {
+}
+
+pub struct TestFixSessionListener<'a>
+{
+    driver: FixDriver<'a>,
+}
+
+pub struct TestFixStream 
+{
+}
+
+impl FixTagHandler for TestFixStream
+{
+	fn tag_value(&mut self, t: u32, v: &[u8])
+    {
+    }
+}
+impl FixStream for TestFixStream
+{
+    type MSG_TYPES = ();
+    fn fix_message_done(&mut self, res: Result<(), FixStreamException>)
+    {
+    }
+	fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
+    {
+    }
+}
+
+pub struct FixDriver<'a>
+{
+    stream: TestFixStream,
+    conn: Option<&'a mut FixConnection<TestTransport, TestFixEnvironment, TestFixSessionListener<'a>>>,
+}
+
+impl<'a> FixSessionListener for TestFixSessionListener<'a> {
+    fn on_request<T: FixAppMsgType>(&mut self, msg: FixMsgType<T>) {
+        println!("Requested: {:?}", &msg.as_bytes());
+        self.driver.conn.as_mut().map(|ch| {
+            let stream = &mut ch.get_out_stream();
+            stream.fix_message_start(FixMsgType::Logon, false);
+            stream.fix_message_done(Ok(()));
+        });
+    }
+
+    fn on_message_pending(&mut self) {
+        println!("Message pending!");
+        let stream = &mut self.driver.stream;
+        self.driver.conn.as_mut().map(|conn| {
+            conn.read_fix_message(stream);
+        });
+    }
 }
 
 impl FixTimerFactory for TestFixEnvironment
@@ -86,6 +183,9 @@ impl FixTimerFactory for TestFixEnvironment
 }
 
 use std::env;
+use std::net::ToSocketAddrs;
+use std::net::Ipv4Addr;
+
 fn main()
 {
 	let args = &mut env::args();
@@ -97,26 +197,38 @@ fn main()
 		return;
 	}
 
-	let ip = args.next().unwrap();
-	let port = args.next().unwrap();
+	let ip: Vec<u8> = args.next().unwrap().split('.').map(|x| { u8::from_str_radix(x, 10).unwrap() }).collect();
+	let port = u16::from_str_radix(args.next().unwrap().as_str(), 10).unwrap();
 	let mode = args.next().unwrap();
+    let sockaddr = (Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), port);
 	
-    let transport = TestTransport { view: vec![0]}; 
     let mut timers = TestFixEnvironment {};
 
-    let (conn_type, _) = match mode.as_str() {
+    let (conn_type, stream): (ConnectionType, Box<Fn() -> TcpStream>) = match mode.as_str() {
 		"-c" => {
-            (ConnectionType::Initiator, ())
+            let stream_provider = move || {
+                TcpStream::connect(sockaddr).unwrap()
+            };
+            (ConnectionType::Initiator, box stream_provider)
 		},
 		"-l" => {
-            (ConnectionType::Acceptor, ())
+            let listener = TcpListener::bind(sockaddr).unwrap();
+            let stream_provider = move || {
+                listener.accept().unwrap().0
+            };
+            (ConnectionType::Acceptor, box stream_provider)
 		},
 		_ => {
 			panic!("usage: <ip> <port> <-c|-l>");
 		}
 	};
+
+    let driver = FixDriver { conn: None, stream: TestFixStream {} };
+    let l = TestFixSessionListener { driver: driver };
     
-    let mut conn = FixConnection::new(transport, timers, conn_type);
+    let transport = TestTransport { connector: stream, tcp: None, reader: None }; 
+    let mut conn = FixConnection::new(transport, timers, conn_type, l);
+    
     conn.connect();
 
 	loop {

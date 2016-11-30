@@ -35,6 +35,7 @@
 pub mod fix;
 pub mod connection;
 pub mod util;
+pub mod fix_tags;
 mod test_util;
 
 #[cfg(test)]

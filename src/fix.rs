@@ -88,7 +88,8 @@ pub trait FixOutChannel
 /// user stream. Usual use case when user (fix application) is ready to read another
 /// fix message, it woud call read_fix_message providing the FixStream
 pub trait FixInChannel {
-	fn read_fix_message<T>(&mut self, &mut T) where T: FixStream;
+	fn read_fix_message<T>(&mut self, &mut T)
+    where T: FixStream;
 }
 
 /// If fix application determines that there is an unrecovable exception for the 
@@ -98,22 +99,31 @@ pub trait FixErrorChannel {
 	fn error(&mut self, FixStreamException); // TODO: Think
 }
 
+/// Every FixApplication has to implement this trait
+/// The idea is for FixService to drive the process. 
+pub trait FixSessionListener {
+	/// FixService request to perform certain action.
+	fn on_request<T: FixAppMsgType>(&mut self, msg: FixMsgType<T>); 
+	/// FixService notifies app that there are potentially
+	/// message pending to be processed.
+	/// TODO: Think maybe we should pass the FixInChannel here
+	/// this would give us more flexibility, but I am not sure it's needed
+	fn on_message_pending(&mut self); 
+}
+
 /// FixApplication is configured with session control object that allows
 /// start/end fix session as well as query and force expected incoming sequnce
-pub trait FixSessionControl {
+pub trait FixSessionControl
+{
 	fn start_session(&mut self);
 	fn end_session(&mut self);
 	fn force_expected_incoming_seq(&mut self, seq: u32);
 	fn get_expected_incoming_seq(&mut self) -> u32;
 }
 
-/// FixApplication may choose to configure custom header tags that will be 
-/// constant and present in each subsequent fix message sent by fix "transport"
-pub trait CustomHeaderInjector : FixTagHandler {} 
-
 /// TimerHandler that allows to cancel previously scheduled timeout
 pub trait FixTimerHandler {
-    fn cancel(self);
+	fn cancel(self);
 }
 
 /// Facility to provide fix "transport" with ability to set timeouts
@@ -128,10 +138,10 @@ pub trait FixTimerFactory
 /// Transport abstraction. FIX is a stream and thus the most tipical transport is 
 /// TCP however any other stream will do, and as such there is a reson to abstract this.
 pub trait FixTransport {
-	fn connect<F>(&self, on_success: F) where F: Fn() -> ();
+	fn connect<F>(&mut self, on_success: F) where F: FnMut() -> ();
 	fn view(&self) -> &[u8];
-	fn consume(&self, len: usize);
-	fn write(&self, buf: &[u8]) -> usize;
+	fn consume(&mut self, len: usize);
+	fn write(&mut self, buf: &[u8]) -> usize;
 }
 
 /// Abstraction representing either FixClient or FixServer
@@ -139,10 +149,6 @@ pub trait FixTransport {
 /// The latter listens for incoming connections. You can be one or the other.
 pub trait FixService {
 	fn connect(&mut self);
-}
-
-/// Every FixApplication has to implement this trait
-pub trait FixApplication {
 }
 
 impl<'b, 'a:'b, T> From<&'a[u8]> for FixMsgType<'b, T>
@@ -164,27 +170,23 @@ where T: FixAppMsgType
 	}
 }
 
-impl<'b, T> AsRef<[u8]> for FixMsgType<'b, T>
+impl<'b, T> FixMsgType<'b,T>
 where T: FixAppMsgType
 {
-	fn as_ref(&self) -> &[u8]
+	pub fn as_bytes(&self) -> &[u8]
 	{
 		match *self {
-			FixMsgType::Logon => {
-				return "A".as_bytes()
-			},
-			FixMsgType::Unknown(t) => {
-				return t;
-			},
-			_ => {
-				return "Unknown".as_bytes()
-			},
+		    FixMsgType::Logon => { "A".as_bytes() },
+			FixMsgType::Logout => { "5".as_bytes() }
+			FixMsgType::SeqReset => { "5".as_bytes() }
+			FixMsgType::Heartbeat => { "5".as_bytes() }
+			FixMsgType::TestRequest => { "5".as_bytes() }
+			FixMsgType::ResendRequest => { "5".as_bytes() }
+			FixMsgType::Unknown(t) => { t },
+			FixMsgType::Custom(ref t) => { "Custom".as_bytes() },
 		}
 	}
-}
 
-impl<'b, T> FixMsgType<'b,T>
-where T: FixAppMsgType {
 	pub fn is_session_level(msg_type: FixMsgType<T>) -> bool {
 		match msg_type {
 			FixMsgType::Logon | 
@@ -194,22 +196,6 @@ where T: FixAppMsgType {
 			FixMsgType::TestRequest | 
 			FixMsgType::ResendRequest => true,
 			_ => false,
-		}
-	}
-	
-	pub fn _get_value<'a>(self) -> &'a[u8]
-	where 'b:'a 
-	{
-		match self {
-			FixMsgType::Logon => {
-				return "A".as_bytes()
-			},
-			FixMsgType::Unknown(t) => {
-				return t;
-			},
-			_ => {
-				return "Unknown".as_bytes()
-			},
 		}
 	}
 }
