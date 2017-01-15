@@ -142,7 +142,7 @@ pub fn get_tag_id(buf: &[u8]) -> Result<Option<FixParseIdLenSum>, FixStreamExcep
 
 pub fn put_tag_id_eq(tag_id: u32, to: &mut Vec<u8>) -> (u32, usize)
 {
-    // TODO: Think how to speed this up
+    // todo: think how to speed this up
     let mut len = 0;
     let mut sum = 0u32;
     let pos = to.len();
@@ -168,6 +168,26 @@ pub fn put_tag_val_soh(val: &[u8], to: &mut Vec<u8>) -> (u32, usize)
     (sum + SOH as u32, len as usize + 1usize)
 }
 
+pub fn put_u32_soh(val: u32, to: &mut Vec<u8>) -> (u32, usize)
+{
+    // todo: think how to speed this up
+    let mut len = 0;
+    let mut sum = 0u32;
+    let pos = to.len();
+    let mut val = val;
+    while val > 0 {
+        let v = (val % 10) as u8 + '0' as u8;
+        to.insert(pos, v);
+        sum += v as u32;
+        len += 1;
+        val = val / 10;
+    }
+    to.push(SOH);
+    sum += SOH as u32;
+    len += 1;
+    (sum, len)
+}
+
 pub struct FixMessageWriter<T>
 {
     sum: u32,
@@ -175,6 +195,30 @@ pub struct FixMessageWriter<T>
     buf: Vec<u8>,
     _phantom: PhantomData<T>,
 }
+
+impl<T> FixMessageWriter<T>
+{
+    pub fn new() -> FixMessageWriter<T>
+    {
+        FixMessageWriter {
+            sum: 0,
+            len: 0,
+            buf: vec![0u8;0],
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn get_bytes(&self) -> &[u8]
+    {
+        &self.buf[..]
+    }
+
+    pub fn drain_head(&mut self, len: usize)
+    {
+        let _ : Vec<u8> = self.buf.drain(0..len).collect();
+    }
+}
+
 impl<T> FixStream for FixMessageWriter<T>
 where T: FixAppMsgType
 {
@@ -189,6 +233,8 @@ where T: FixAppMsgType
 
     fn fix_message_done(&mut self, res: Result<(), FixStreamException>)
     {
+        put_tag_id_eq(trailer::CheckSum, &mut self.buf);
+        put_u32_soh((self.sum % 256), &mut self.buf);
     }
 }
 

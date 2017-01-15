@@ -1,1 +1,13 @@
 FixApplication -> &mut FixConnection
+
+MUX mut-> Reader mut-> FixApp
++---mut-> FixTransport mut-> FixConnection mut-> FixApp
+
+FixApp is shared mutable
+
+
+MUX
+Driver <>---------- FixApp
+       <>---------- FixConnection <>------ FixTransport
+       <>---------- Reader
+

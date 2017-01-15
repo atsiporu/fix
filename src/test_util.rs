@@ -17,8 +17,9 @@ use self::sentinel_list::{List, ListHandle};
 
 const ASCII_ZERO: i32 = ('0' as i32);
 
-pub struct TestFixSessionListener
+pub struct TestFixApplication
 {
+    pub message: TestFixMessage
 }
 
 pub struct TestFixEnvironment
@@ -131,16 +132,12 @@ impl TestFixRemote {
 	}
 }
 
-impl<'b> TestFixTransport<'b> {
-	pub fn new<'a:'b>(remote: &'a RefCell<TestFixRemote>) -> FixConnection<TestFixTransport<'b>, TestFixEnvironment, TestFixSessionListener> {
-		let tft = TestFixTransport {
-			remote: remote,
-		};
-
-		let env = TestFixEnvironment::new();
-
-		FixConnection::new(tft, env, ConnectionType::Initiator, TestFixSessionListener {})
-    }
+pub fn fix_parts<'a>(remote: &'a RefCell<TestFixRemote>) -> (TestFixTransport<'a>, TestFixEnvironment, TestFixApplication)
+{
+    let tft = TestFixTransport { remote: remote, };
+    let env = TestFixEnvironment::new();
+    let fix_app = TestFixApplication { message: TestFixMessage::new() };
+    (tft, env, fix_app)
 }
 
 impl<T> FixTimerHandler for TestFixTimerHandler<T>
@@ -172,9 +169,9 @@ impl FixTimerFactory for TestFixEnvironment
 
 impl<'b> FixTransport for TestFixTransport<'b>
 {
-	fn connect<F>(&mut self, mut on_success: F) where F: FnMut() -> ()
+	fn connect<F>(self, mut on_success: F) where F: FnOnce(Self) -> (), Self: Sized
 	{
-		on_success();
+		on_success(self);
 	}
 
 	fn view(&self) -> &[u8] {
@@ -188,24 +185,38 @@ impl<'b> FixTransport for TestFixTransport<'b>
     fn write(&mut self, buf: &[u8]) -> usize {
         buf.len()
     }
+	
+    fn on_read<F>(&mut self, mut on_success: F) where F: FnOnce(&mut Self) -> ()
+	{
+		on_success(self);
+	}
 }
 
-impl FixSessionListener for TestFixSessionListener
+impl FixApplication for TestFixApplication
 {
-    fn on_request<T>(&mut self, msg_type: FixMsgType<T>)
-    where T: FixAppMsgType
+    type FIX_STREAM = TestFixMessage;
+
+    fn on_request<T, S>(&mut self, msg_type: FixMsgType<T>, svs: &mut S)
+    where T: FixAppMsgType, S: FixService
     {
     }
 
-    fn on_message_pending(&mut self)
+    fn on_message_pending<C>(&mut self, in_ch: &mut C)
+        where C: FixInChannel
     {
+    }
+
+    fn app_handler(&mut self) -> &mut Self::FIX_STREAM
+    {
+        &mut self.message
     }
 }
 
 impl FixStream for TestFixRemote
 {
 	type MSG_TYPES = ();
-	fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
+	
+    fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
 	{
 		self.sum = 0; // start accumulation of checksum
 		

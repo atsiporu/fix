@@ -15,7 +15,7 @@ use std::net::{TcpListener, TcpStream};
 use std::io::ErrorKind;
 use std::sync::atomic::AtomicUsize;
 use tbr::*;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct TestTransport
 {
@@ -26,7 +26,7 @@ pub struct TestTransport
 
 impl FixTransport for TestTransport
 {
-	fn connect<F>(&mut self, mut on_success: F) where F: FnMut() -> ()
+	fn connect<F>(mut self, mut on_success: F) where F: FnOnce(Self) -> (), Self: Sized
 	{
         let (r, w) = ThreadedBufReader::with_capacity((self.connector)(), 1024);
         self.reader = Some(thread::spawn(move || {
@@ -37,7 +37,7 @@ impl FixTransport for TestTransport
         }));
 
         self.tcp = Some(r);
-		on_success();
+		on_success(self);
 	}
 
 	fn view(&self) -> &[u8] {
@@ -65,6 +65,7 @@ impl FixTransport for TestTransport
             .map_or(0, |stream| {
                 
                 let writer: &mut TcpStream = stream.into();
+                println!("Writing {:?}", buf);
                 writer.write(buf)
                       .or_else(|err| {
                           if err.kind() == ErrorKind::WouldBlock {
@@ -76,6 +77,14 @@ impl FixTransport for TestTransport
                       }).unwrap()
             })
 	}
+	
+    fn on_read<F>(&mut self, mut on_success: F) where F: FnOnce(&mut Self) -> ()
+    {
+        thread::spawn(move || {
+            thread::sleep_ms(1000); // example sleep a second
+        }).join();
+        on_success(self);
+    }
 }
 
 
@@ -94,9 +103,9 @@ pub struct TestFixEnvironment
 {
 }
 
-pub struct TestFixSessionListener<'a>
+pub struct ExamplFixApp
 {
-    driver: FixDriver<'a>,
+    stream: TestFixStream,
 }
 
 pub struct TestFixStream 
@@ -120,28 +129,28 @@ impl FixStream for TestFixStream
     }
 }
 
-pub struct FixDriver<'a>
-{
-    stream: TestFixStream,
-    conn: Option<&'a mut FixConnection<TestTransport, TestFixEnvironment, TestFixSessionListener<'a>>>,
-}
+impl FixApplication for ExamplFixApp {
+    type FIX_STREAM = TestFixStream;
 
-impl<'a> FixSessionListener for TestFixSessionListener<'a> {
-    fn on_request<T: FixAppMsgType>(&mut self, msg: FixMsgType<T>) {
-        println!("Requested: {:?}", &msg.as_bytes());
-        self.driver.conn.as_mut().map(|ch| {
-            let stream = &mut ch.get_out_stream();
-            stream.fix_message_start(FixMsgType::Logon, false);
-            stream.fix_message_done(Ok(()));
-        });
+	fn on_request<T, S>(&mut self, msg: FixMsgType<T>, svs: &mut S)
+    where T: FixAppMsgType, S: FixService, <S as FixOutChannel>::FMS: FixStream
+    {
+        println!("on_request: Requested: {:?}", &msg.as_bytes());
+        let stream = svs.get_out_stream();
+        stream.fix_message_start(FixMsgType::Logon, false);
+        stream.fix_message_done(Ok(()));
     }
 
-    fn on_message_pending(&mut self) {
+    fn on_message_pending<C>(&mut self, in_ch: &mut C) 
+    where C: FixInChannel
+    {
         println!("Message pending!");
-        let stream = &mut self.driver.stream;
-        self.driver.conn.as_mut().map(|conn| {
-            conn.read_fix_message(stream);
-        });
+        in_ch.read_fix_message(self);
+    }
+
+    fn app_handler(&mut self) -> &mut Self::FIX_STREAM
+    {
+        &mut self.stream
     }
 }
 
@@ -223,13 +232,10 @@ fn main()
 		}
 	};
 
-    let driver = FixDriver { conn: None, stream: TestFixStream {} };
-    let l = TestFixSessionListener { driver: driver };
-    
     let transport = TestTransport { connector: stream, tcp: None, reader: None }; 
-    let mut conn = FixConnection::new(transport, timers, conn_type, l);
-    
-    conn.connect();
+    let mut conn = FixConnection::new(transport, timers, conn_type);
+    let mut fix_app = ExamplFixApp { stream: TestFixStream {} };
+    conn.connect(&mut fix_app);
 
 	loop {
 		thread::sleep_ms(100);

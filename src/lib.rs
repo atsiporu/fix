@@ -52,9 +52,11 @@ mod test {
 	use std::cell::RefCell;
 	use std::cell::RefMut;
 	use std::rc::Rc;
-    use std::sync::Arc;
+    use std::sync::{Arc};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 	use test_util::{TestFixMessage, TestFixEnvironment};
 	use std::time::Duration;
+    use connection::{FixConnection, ConnectionType};
 
 	/*
 	impl FixAppMsgType for () {
@@ -143,10 +145,11 @@ mod test {
 	#[test]
 	fn test_fix_logon() {
 
-		let mut fmh = TestFixMessage::new();
 		let r = RefCell::new(test_util::TestFixRemote::new());
-		let mut fc = test_util::TestFixTransport::new(&r);
-		
+        let (mut tft, env, mut fix_app) = test_util::fix_parts(&r);
+
+        let mut fc = FixConnection::new(tft, env, ConnectionType::Acceptor);
+
 		let my_fix_type = "TT".to_string();
 		{
 			let mut rs = r.borrow_mut();
@@ -161,26 +164,26 @@ mod test {
 
 		//let fc = &mut fc as &mut FixInChannel;
 		
-		let res = fc.read_fix_message(&mut fmh);
+		let res = fc.read_fix_message(&mut fix_app);
 		// session level message not communicated
-		assert_eq!(None, fmh.msg_type);
+		assert_eq!(None, fix_app.message.msg_type);
 
-		let res = fc.read_fix_message(&mut fmh);
+		let res = fc.read_fix_message(&mut fix_app);
 		// application level message communicated
-		assert_eq!(Some("TT".to_string()), fmh.msg_type);
-		assert_eq!(&"Hello".to_string(), fmh.tag_values.get(&58).unwrap());
+		assert_eq!(Some("TT".to_string()), fix_app.message.msg_type);
+		assert_eq!(&"Hello".to_string(), fix_app.message.tag_values.get(&58).unwrap());
 	}
 	
 	#[test]
 	fn test_fix_environment() {
 		let env = &mut TestFixEnvironment::new();
-		let count: *mut _ = &mut 0;
+		let count = AtomicUsize::new(0);
         let trigger = || {
-            *count += 1;
+            count.fetch_add(1, Ordering::Relaxed);
 			println!("Timeout!");
 		};
 		let h = env.set_timeout(trigger, Duration::from_secs(10));
 		env.run_for(Duration::from_secs(20));
-        assert_eq!(2, unsafe { *count })
+        assert_eq!(2, count.load(Ordering::Relaxed))
 	}
 }

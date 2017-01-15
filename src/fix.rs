@@ -87,9 +87,9 @@ pub trait FixOutChannel
 /// Input channel provides means to read incoming fix message onto the provided by
 /// user stream. Usual use case when user (fix application) is ready to read another
 /// fix message, it woud call read_fix_message providing the FixStream
-pub trait FixInChannel {
-	fn read_fix_message<T>(&mut self, &mut T)
-    where T: FixStream;
+pub trait FixInChannel 
+{
+	fn read_fix_message<L>(&mut self, &mut L) where L: FixApplication;
 }
 
 /// If fix application determines that there is an unrecovable exception for the 
@@ -99,26 +99,30 @@ pub trait FixErrorChannel {
 	fn error(&mut self, FixStreamException); // TODO: Think
 }
 
-/// Every FixApplication has to implement this trait
-/// The idea is for FixService to drive the process. 
-pub trait FixSessionListener {
-	/// FixService request to perform certain action.
-	fn on_request<T: FixAppMsgType>(&mut self, msg: FixMsgType<T>); 
-	/// FixService notifies app that there are potentially
-	/// message pending to be processed.
-	/// TODO: Think maybe we should pass the FixInChannel here
-	/// this would give us more flexibility, but I am not sure it's needed
-	fn on_message_pending(&mut self); 
-}
-
 /// FixApplication is configured with session control object that allows
 /// start/end fix session as well as query and force expected incoming sequnce
 pub trait FixSessionControl
 {
-	fn start_session(&mut self);
-	fn end_session(&mut self);
+	fn start_session<L>(&mut self, l: &mut L) where L: FixApplication;
+	fn end_session<L>(&mut self, l: &mut L) where L: FixApplication;
 	fn force_expected_incoming_seq(&mut self, seq: u32);
 	fn get_expected_incoming_seq(&mut self) -> u32;
+}
+
+/// Every FixApplication has to implement this trait
+/// The idea is for FixService to drive the process. 
+pub trait FixApplication {
+	type FIX_STREAM: FixStream;
+	/// FixService request to perform certain action.
+	fn on_request<T, S>(&mut self, msg: FixMsgType<T>, svs: &mut S) 
+    where T: FixAppMsgType, S: FixService, <S as FixOutChannel>::FMS: FixStream;
+	/// FixService notifies app that there are potentially
+	/// message pending to be processed.
+	/// TODO: Think maybe we should pass the FixInChannel here
+	/// this would give us more flexibility, but I am not sure it's needed
+	fn on_message_pending<C>(&mut self, in_ch: &mut C) where C: FixInChannel;
+
+    fn app_handler(&mut self) -> &mut Self::FIX_STREAM;
 }
 
 /// TimerHandler that allows to cancel previously scheduled timeout
@@ -138,17 +142,20 @@ pub trait FixTimerFactory
 /// Transport abstraction. FIX is a stream and thus the most tipical transport is 
 /// TCP however any other stream will do, and as such there is a reson to abstract this.
 pub trait FixTransport {
-	fn connect<F>(&mut self, on_success: F) where F: FnMut() -> ();
+	fn connect<F>(self, on_success: F) where F: FnOnce(Self) -> (), Self: Sized;
 	fn view(&self) -> &[u8];
 	fn consume(&mut self, len: usize);
 	fn write(&mut self, buf: &[u8]) -> usize;
+	fn on_read<F>(&mut self, on_read: F) where F: FnOnce(&mut Self) -> ();
 }
 
 /// Abstraction representing either FixClient or FixServer
 /// The former initiates connection to the listening remote site.
 /// The latter listens for incoming connections. You can be one or the other.
-pub trait FixService {
-	fn connect(&mut self);
+pub trait FixService: FixInChannel + FixOutChannel + FixErrorChannel + FixSessionControl 
+{
+	fn connect<L>(&mut self, l: &mut L) where L: FixApplication;
+    fn request_done(&mut self);
 }
 
 impl<'b, 'a:'b, T> From<&'a[u8]> for FixMsgType<'b, T>
