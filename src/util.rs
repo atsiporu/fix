@@ -13,9 +13,9 @@ const ASCII_ZERO: i32 = ('0' as i32);
 const SOH: u8 = '\x01' as u8;
 const EQ: u8 = '=' as u8;
 
-struct Slicer<'a> {
-    buf: &'a[u8],
-    len: usize
+pub struct Slicer<'a> {
+    pub buf: &'a[u8],
+    pub len: usize
 }
 
 impl<'a> Slicer<'a> {
@@ -76,10 +76,10 @@ where T: FixStream
     }
 }
 
-fn get_tag<'a> (s: &mut Slicer<'a>) -> Result<Option<(u32, &'a[u8], u32)>, FixStreamException>
+pub fn get_tag<'a> (s: &mut Slicer<'a>) -> Result<Option<(u32, &'a[u8], u32)>, FixStreamException>
 { 
     let mut chksum = 0;
-    match try!(get_tag_id(s.buf())) {
+    match get_tag_id(s.buf())? {
         Some((id, len, sum)) => {
             s.consume(len);
             chksum += sum;
@@ -113,7 +113,7 @@ pub fn get_tag_value<'a>(buf: &'a [u8]) -> Option<(&'a [u8], u32)> {
 }
 
 pub fn get_tag_id(buf: &[u8]) -> Result<Option<FixParseIdLenSum>, FixStreamException> {
-    
+   
     let mut tag_id = 0;
     let mut count = 0;
     let mut sum: u32 = 0;
@@ -190,6 +190,7 @@ pub fn put_u32_soh(val: u32, to: &mut Vec<u8>) -> (u32, usize)
 
 pub struct FixMessageWriter<T>
 {
+    version: Option<String>,
     sum: u32,
     len: usize,
     buf: Vec<u8>,
@@ -198,9 +199,10 @@ pub struct FixMessageWriter<T>
 
 impl<T> FixMessageWriter<T>
 {
-    pub fn new() -> FixMessageWriter<T>
+    pub fn new(version: String) -> FixMessageWriter<T>
     {
         FixMessageWriter {
+            version: Some(version),
             sum: 0,
             len: 0,
             buf: vec![0u8;0],
@@ -228,7 +230,11 @@ where T: FixAppMsgType
     {
         self.sum = 0;
         self.len = 0;
+        let version = self.version.take().unwrap();
+        self.tag_value(header::Version, version.as_bytes()); 
+        self.tag_value(header::Length, "000".as_bytes());
         self.tag_value(header::MsgType, msg_type.as_bytes()); 
+        self.version = Some(version);
     }
 
     fn fix_message_done(&mut self, res: Result<(), FixStreamException>)

@@ -6,22 +6,6 @@ use std::marker::PhantomData;
 /// Temporary
 /// ///////////////////////////////////////////////////////////////
 
-enum Void {}
-impl FixAppMsgType for Void {
-    fn lookup(btype: &[u8]) -> Option<Self>
-        where Self: Sized
-    {
-        None
-    }
-}
-
-impl FixAppMsgType for () {
-    fn lookup(btype: &[u8]) -> Option<Self>
-        where Self: Sized
-    {
-        None
-    }
-}
 
 #[derive(Debug)]
 pub enum ConnectionType {
@@ -29,12 +13,12 @@ pub enum ConnectionType {
     Acceptor,
 }
 
-pub struct FixConnection<T, E>
-    where T: FixTransport,
+pub struct FixConnection<'a, T, E>
+    where T: 'a + FixTransport,
           E: FixTimerFactory
 {
     timers: E,
-    transport: Option<T>,
+    transport: Option<&'a mut T>,
     in_state: FixInState,
     out_state: FixOutState,
     conn_type: ConnectionType,
@@ -42,18 +26,12 @@ pub struct FixConnection<T, E>
     fix_writer: FixMessageWriter<()>,
 }
 
-pub struct FixSessionHandler<'a, A>
-    where A: 'a + FixApplication
-{
-    app_handler: Option<&'a mut A>,
-}
-
-
-impl<T, E> FixConnection<T, E>
+impl<'a, T, E> FixConnection<'a, T, E>
     where T: FixTransport,
           E: FixTimerFactory
 {
-    pub fn new(transport: T, timers: E, conn_type: ConnectionType) -> FixConnection<T, E> {
+    pub fn new(version: String, transport: &mut T, timers: E, conn_type: ConnectionType) -> FixConnection<'a, T, E> 
+    {
         FixConnection {
             timers: timers,
             transport: Some(transport),
@@ -61,37 +39,109 @@ impl<T, E> FixConnection<T, E>
             out_state: FixOutState::Disconnected,
             conn_type: conn_type,
             nextInSeq: 0,
-            fix_writer: FixMessageWriter::new(),
+            fix_writer: FixMessageWriter::new(version),
         }
     }
 
-    pub fn read_message<S>(&mut self, fm: &mut S, t: &mut T)
+    pub fn read_message<S>(&mut self, app: &mut S)
         where S: FixApplication
     {
-        println!("Read message!");
-
-        let parse_result = {
-            let mut fsh = FixSessionHandler { app_handler: Some(fm) };
-            super::util::parse_fix_message(t.view(), &mut fsh)
-        };
-
-        match parse_result {
-            Ok(Some(size)) => {
-                t.consume(size);
+        match self._read_message(app) {
+            Ok(Some((size, request))) => {
+                println!("Success! {:?}", size);
+                self.transport.as_mut().unwrap().consume(size);
+                if request.is_some() {
+                    app.on_request(request.unwrap(), self);
+                }
             }
             Ok(None) => {
-                t.on_read(|transport| {
+                /*
+                self.transport.as_mut().unwrap().on_read(|transport| {
+                    self.transport = Some(transport);
                     println!("On read!");
                 });
+                */
             }
-            Err(_) => {
+            Err(e) => {
                 // shutdown
+                println!("Error! {:?}", e);
+            }
+        }
+    }
+
+    pub fn _read_message<S>(&mut self, app: &mut S) -> Result<Option<(usize, Option<SessionRequest>)>, FixStreamException>
+        where S: FixApplication
+    {
+        let mut request = None;
+
+        let mut t = self.transport.as_ref().unwrap();
+        
+        println!("Read message buf: {:?}", String::from_utf8_lossy(t.view()));
+        
+        let mut chksum = 0;
+        let mut s = super::util::Slicer {buf: t.view(), len: 0};
+        let required_tags = [8, 9, 35];
+        
+        for eid in &required_tags[..] {
+            //println!("total: {:?}", String::from_utf8_lossy(s.buf()));
+            let res = super::util::get_tag(&mut s);
+            match res {
+                Ok(Some((id, _, _))) if id != *eid as u32 => {
+                    return Err(format!("Missplaced tag expected {} got {}", *eid, id));
+                },
+                Ok(Some((id, v, sum))) if id == 35u32 => {
+                    chksum += sum;
+                    let msg_type = FixMsgType::from(v);
+                    request = Option::<SessionRequestType>::from(&msg_type);
+                    if request.is_none() {
+                        app.in_stream().fix_message_start(msg_type, true);
+                    }
+                },
+                Ok(Some((id, _, sum))) => {
+                    chksum += sum;
+                },
+                Ok(None) => return Ok(None),
+                Err(err) => return Err(err),
+            };
+        }
+
+        loop {
+            //println!("tags: {:?}", String::from_utf8_lossy(s.buf()));
+            match super::util::get_tag(&mut s) {
+                Ok(Some((id, v, sum))) if id != 10u32 => {
+                    chksum += sum;
+                    println!("tag: {} {:?}", id, String::from_utf8_lossy(v));
+                    if request.is_none() {
+                        app.in_stream().tag_value(id, v);
+                    }
+                },
+                Ok(Some((_, v, _))) => {
+                    let sum = v.iter().fold(0, |acc: u32, &x| acc * 10 + (x as u32 -'0' as u32));
+                    if sum == (chksum % 256) { 
+                        if request.is_none() {
+                            app.in_stream().fix_message_done(Ok(()));
+                        }
+                        return Ok(Some((s.len, request.and_then(|v| Some(SessionRequest::In(v))))));
+                    }
+                    let err_str = format!("Malformed message: calc sum {} != {}", chksum%256, sum);
+                    if request.is_none() {
+                        app.in_stream().fix_message_done(Err(err_str));
+                    }
+                    let err_str = format!("Malformed message: calc sum {} != {}", chksum%256, sum);
+                    return Err(err_str);
+                },
+                Err(err) => {
+                    return Err(err)
+                },
+                Ok(None) => {
+                    return Ok(None)
+                },
             }
         }
     }
 }
 
-impl<T, E> FixService for FixConnection<T, E>
+impl<'a, T, E> FixService for FixConnection<'a, T, E>
     where T: FixTransport,
           E: FixTimerFactory
 {
@@ -109,10 +159,11 @@ impl<T, E> FixService for FixConnection<T, E>
                 self.in_state = FixInState::Disconnected;
                 self.out_state = FixOutState::Logon;
 
-                let mut transport = self.transport.take().unwrap();
-                transport.connect(|transport| {
+                let t : &'a mut T = self.transport.take().unwrap();
+
+                t.connect(move |transport| {
                     self.transport = Some(transport);
-                    l.on_request(FixMsgType::Logon as FixMsgType<Void>, self);
+                    l.on_request(SessionRequest::In(SessionRequestType::Logon(None)), self);
                 });
             }
             ConnectionType::Acceptor => {
@@ -120,13 +171,12 @@ impl<T, E> FixService for FixConnection<T, E>
                 self.in_state = FixInState::Logon;
                 self.out_state = FixOutState::Disconnected;
 
-                let mut transport = self.transport.take().unwrap();
-                transport.connect(|mut transport| {
+                self.transport.take().unwrap().connect(|mut transport| {
                     println!("Connection accepted!");
                     transport.on_read(|transport| {
-                        self.read_message(l, transport);
+                        self.transport = Some(transport);
+                        self.read_message(l);
                     });
-                    self.transport = Some(transport);
                 });
             }
         }
@@ -136,10 +186,23 @@ impl<T, E> FixService for FixConnection<T, E>
                  self.out_state);
     }
 
-    fn request_done(&mut self) {}
+    fn request_done(&mut self, r: SessionRequest)
+    {
+        self.fix_message_start(FixMsgType::Logon, false);
+        self.fix_message_done(Ok(()));
+        let match_me = (self.out_state, r);
+        match match_me {
+            (FixOutState::Connected, SessionRequest::In(SessionRequestType::Logon(_))) => {
+            //   self.fix_message_start(FixMsgType::Logon, false);
+            //   self.fix_message_done(Ok(()));
+            },
+            _ => {
+            }
+        }
+    }
 }
 
-impl<T, E> FixSessionControl for FixConnection<T, E>
+impl<'a, T, E> FixSessionControl for FixConnection<'a, T, E>
     where T: FixTransport,
           E: FixTimerFactory
 {
@@ -155,7 +218,7 @@ impl<T, E> FixSessionControl for FixConnection<T, E>
             _ => {
                 self.in_state = FixInState::Disconnected;
                 self.out_state = FixOutState::Logout;
-                l.on_request(FixMsgType::Logout as FixMsgType<Void>, self);
+                l.on_request(SessionRequest::In(SessionRequestType::Logout(None)), self);
             }
         }
     }
@@ -169,31 +232,29 @@ impl<T, E> FixSessionControl for FixConnection<T, E>
     }
 }
 
-impl<T, E> FixInChannel for FixConnection<T, E>
+impl<'a, T, E> FixInChannel for FixConnection<'a, T, E>
     where T: FixTransport,
           E: FixTimerFactory
 {
-    fn read_fix_message<L>(&mut self, fm: &mut L)
+    fn read_fix_message<L>(&mut self, app: &mut L)
         where L: FixApplication
     {
-        let mut transport = self.transport.take().unwrap();
-        self.read_message(fm, &mut transport);
-        self.transport = Some(transport);
+        self.read_message(app);
     }
 }
 
-impl<T, E> FixOutChannel for FixConnection<T, E>
+impl<'a, T, E> FixOutChannel for FixConnection<'a, T, E>
     where T: FixTransport,
           E: FixTimerFactory
 {
-    type FMS = FixConnection<T, E>;
+    type FMS = FixConnection<'a, T, E>;
 
     fn get_out_stream(&mut self) -> &mut Self::FMS {
         self
     }
 }
 
-impl<T, E> FixTagHandler for FixConnection<T, E>
+impl<'a, T, E> FixTagHandler for FixConnection<'a, T, E>
     where T: FixTransport,
           E: FixTimerFactory
 {
@@ -202,7 +263,7 @@ impl<T, E> FixTagHandler for FixConnection<T, E>
     }
 }
 
-impl<T, E> FixStream for FixConnection<T, E>
+impl<'a, T, E> FixStream for FixConnection<'a, T, E>
     where T: FixTransport,
           E: FixTimerFactory
 {
@@ -218,50 +279,17 @@ impl<T, E> FixStream for FixConnection<T, E>
 
         self.fix_writer.drain_head(len);
     }
-    fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool) {
+	fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
+    {
         println!("Fix message start!");
         self.fix_writer.fix_message_start(msg_type, is_replayable);
     }
 }
 
-impl<T, E> FixErrorChannel for FixConnection<T, E>
+impl<'a, T, E> FixErrorChannel for FixConnection<'a, T, E>
     where T: FixTransport,
           E: FixTimerFactory
 {
     fn error(&mut self, e: FixStreamException) {}
 }
 
-impl<'a, A> FixStream for FixSessionHandler<'a, A>
-    where A: 'a + FixApplication
-{
-    type MSG_TYPES = <A::FIX_STREAM as FixStream>::MSG_TYPES;
-    fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool) {
-        print!("Connection got ");
-        match msg_type {
-            FixMsgType::Logon => {
-                println!("Logon");
-                self.app_handler = None;
-            }
-            _ => {
-                self.app_handler.as_mut().map(|fix_app| {
-                    fix_app.app_handler().fix_message_start(msg_type, is_replayable);
-                });
-            }
-        }
-    }
-    fn fix_message_done(&mut self, res: Result<(), FixStreamException>) {
-        self.app_handler.as_mut().map(|fix_app| {
-            fix_app.app_handler().fix_message_done(res);
-        });
-    }
-}
-
-impl<'a, A> FixTagHandler for FixSessionHandler<'a, A>
-    where A: 'a + FixApplication
-{
-    fn tag_value(&mut self, t: u32, v: &[u8]) {
-        self.app_handler.as_mut().map(|fix_app| {
-            fix_app.app_handler().tag_value(t, v);
-        });
-    }
-}

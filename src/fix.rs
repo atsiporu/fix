@@ -7,6 +7,7 @@ use std::fmt::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::time::Duration;
+use futures::{Future, Sink, Stream};
 
 pub type FixStreamException = String;
 pub type FixParseIdLenSum = (u32, usize, u32);
@@ -30,8 +31,24 @@ where T: FixAppMsgType {
 	Unknown(&'a[u8]),
 }
 
+#[derive(Debug, PartialEq)]
+pub enum SessionRequest {
+    In(SessionRequestType),
+    Out(SessionRequestType),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum SessionRequestType {
+    Logon(Option<()>),
+    Logout(Option<()>),
+    SeqReset(Option<()>),
+    Heartbeat(Option<()>),
+    TestRequest(Option<()>),
+    ResendRequest(Option<()>),
+}
+
 /// "Outgoing" connection state
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum FixOutState {
 	Disconnected,
 	Logon,
@@ -114,15 +131,15 @@ pub trait FixSessionControl
 pub trait FixApplication {
 	type FIX_STREAM: FixStream;
 	/// FixService request to perform certain action.
-	fn on_request<T, S>(&mut self, msg: FixMsgType<T>, svs: &mut S) 
-    where T: FixAppMsgType, S: FixService, <S as FixOutChannel>::FMS: FixStream;
+	fn on_request<S>(&mut self, r: SessionRequest, svs: &mut S) 
+    where S: FixService, <S as FixOutChannel>::FMS: FixStream;
 	/// FixService notifies app that there are potentially
 	/// message pending to be processed.
 	/// TODO: Think maybe we should pass the FixInChannel here
 	/// this would give us more flexibility, but I am not sure it's needed
 	fn on_message_pending<C>(&mut self, in_ch: &mut C) where C: FixInChannel;
 
-    fn app_handler(&mut self) -> &mut Self::FIX_STREAM;
+    fn in_stream(&mut self) -> &mut Self::FIX_STREAM;
 }
 
 /// TimerHandler that allows to cancel previously scheduled timeout
@@ -142,7 +159,8 @@ pub trait FixTimerFactory
 /// Transport abstraction. FIX is a stream and thus the most tipical transport is 
 /// TCP however any other stream will do, and as such there is a reson to abstract this.
 pub trait FixTransport {
-	fn connect<F>(self, on_success: F) where F: FnOnce(Self) -> (), Self: Sized;
+	fn connect<F, SNK, SRC>(&mut self) -> F
+        where F: Future<Item=(SNK, SRC), Error=String>, SNK: Sink, SRC: Stream;
 	fn view(&self) -> &[u8];
 	fn consume(&mut self, len: usize);
 	fn write(&mut self, buf: &[u8]) -> usize;
@@ -155,7 +173,7 @@ pub trait FixTransport {
 pub trait FixService: FixInChannel + FixOutChannel + FixErrorChannel + FixSessionControl 
 {
 	fn connect<L>(&mut self, l: &mut L) where L: FixApplication;
-    fn request_done(&mut self);
+	fn request_done(&mut self, r: SessionRequest); 
 }
 
 impl<'b, 'a:'b, T> From<&'a[u8]> for FixMsgType<'b, T>
@@ -194,8 +212,8 @@ where T: FixAppMsgType
 		}
 	}
 
-	pub fn is_session_level(msg_type: FixMsgType<T>) -> bool {
-		match msg_type {
+	pub fn is_session_level(msg_type: &FixMsgType<T>) -> bool {
+		match *msg_type {
 			FixMsgType::Logon | 
 			FixMsgType::Logout | 
 			FixMsgType::SeqReset | 
@@ -205,4 +223,22 @@ where T: FixAppMsgType
 			_ => false,
 		}
 	}
+}
+
+impl<'a, 'b, T> From<&'a FixMsgType<'b, T>> for Option<SessionRequestType>
+where T: FixAppMsgType
+{
+    fn from(msg_type: &FixMsgType<'b, T>) -> Self
+    {
+		match *msg_type {
+		    FixMsgType::Logon => { Some(SessionRequestType::Logon(None)) },
+			FixMsgType::Logout => { Some(SessionRequestType::Logout(None)) }
+			FixMsgType::SeqReset => { Some(SessionRequestType::SeqReset(None)) }
+			FixMsgType::Heartbeat => { Some(SessionRequestType::Heartbeat(None)) }
+			FixMsgType::TestRequest => { Some(SessionRequestType::TestRequest(None)) }
+			FixMsgType::ResendRequest => { Some(SessionRequestType::ResendRequest(None)) }
+			FixMsgType::Unknown(t) => { None },
+			FixMsgType::Custom(ref t) => { None },
+		}
+    }
 }

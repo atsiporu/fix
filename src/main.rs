@@ -78,7 +78,7 @@ impl FixTransport for TestTransport
             })
 	}
 	
-    fn on_read<F>(&mut self, mut on_success: F) where F: FnOnce(&mut Self) -> ()
+    fn on_read<F>(self, mut on_success: F) where F: FnOnce(Self) -> (), Self: Sized
     {
         thread::spawn(move || {
             thread::sleep_ms(1000); // example sleep a second
@@ -123,22 +123,25 @@ impl FixStream for TestFixStream
     type MSG_TYPES = ();
     fn fix_message_done(&mut self, res: Result<(), FixStreamException>)
     {
+        println!("Application fix_message_done");
     }
 	fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
     {
+        println!("Application fix_message_start");
     }
 }
 
 impl FixApplication for ExamplFixApp {
     type FIX_STREAM = TestFixStream;
 
-	fn on_request<T, S>(&mut self, msg: FixMsgType<T>, svs: &mut S)
-    where T: FixAppMsgType, S: FixService, <S as FixOutChannel>::FMS: FixStream
+	fn on_request<S>(&mut self, r: SessionRequest, svs: &mut S)
+    where S: FixService, <S as FixOutChannel>::FMS: FixStream
     {
-        println!("on_request: Requested: {:?}", &msg.as_bytes());
-        let stream = svs.get_out_stream();
-        stream.fix_message_start(FixMsgType::Logon, false);
-        stream.fix_message_done(Ok(()));
+        println!("on_request: Requested: {:?}", r);
+        svs.request_done(r);
+//       let stream = svs.get_out_stream();
+//       stream.fix_message_start(FixMsgType::Logon, false);
+//       stream.fix_message_done(Ok(()));
     }
 
     fn on_message_pending<C>(&mut self, in_ch: &mut C) 
@@ -148,7 +151,7 @@ impl FixApplication for ExamplFixApp {
         in_ch.read_fix_message(self);
     }
 
-    fn app_handler(&mut self) -> &mut Self::FIX_STREAM
+    fn in_stream(&mut self) -> &mut Self::FIX_STREAM
     {
         &mut self.stream
     }
@@ -233,7 +236,7 @@ fn main()
 	};
 
     let transport = TestTransport { connector: stream, tcp: None, reader: None }; 
-    let mut conn = FixConnection::new(transport, timers, conn_type);
+    let mut conn = FixConnection::new("FIX4.2".to_string(), transport, timers, conn_type);
     let mut fix_app = ExamplFixApp { stream: TestFixStream {} };
     conn.connect(&mut fix_app);
 

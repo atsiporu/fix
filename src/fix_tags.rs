@@ -1,5 +1,7 @@
 pub mod header
 {
+    pub const Version: u32 = 8;
+    pub const Length: u32 = 9;
     pub const MsgType: u32 = 35;
 }
 

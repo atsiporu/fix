@@ -19,7 +19,8 @@ const ASCII_ZERO: i32 = ('0' as i32);
 
 pub struct TestFixApplication
 {
-    pub message: TestFixMessage
+    pub message: TestFixMessage,
+    pub requests: Vec<SessionRequest>,
 }
 
 pub struct TestFixEnvironment
@@ -41,8 +42,8 @@ where T: ListHandle<TestFixTimerDesc>
 	timerh: T,
 }
 
-pub struct TestFixTransport<'b> {
-	remote: &'b RefCell<TestFixRemote>,
+pub struct TestFixTransport {
+	remote: Rc<RefCell<TestFixRemote>>,
 }
 
 pub struct TestFixRemote {
@@ -50,6 +51,8 @@ pub struct TestFixRemote {
 	len: usize,
 	lenOff: usize,
 	data: UnsafeCell<Vec<u8>>,
+    pend_accept: Vec<Box<FnOnce() -> ()>>,
+    pend_read: Vec<Box<FnOnce() -> ()>>,
 }
 
 pub struct TestFixMessage {
@@ -58,6 +61,14 @@ pub struct TestFixMessage {
 	pub done: bool,
 	pub tag_ids: Vec<u32>,
 	pub tag_values: HashMap<u32, String>,
+}
+
+impl FixAppMsgType for () {
+    fn lookup(btype: &[u8]) -> Option<Self>
+        where Self: Sized
+    {
+        None
+    }
 }
 
 impl TestFixEnvironment
@@ -112,7 +123,7 @@ impl FixStream for TestFixMessage
 	}
 
 	fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
-	{
+    {
 		self.is_replayable = is_replayable;
 		self.done = false;
 		let mut tv = vec![0;0];
@@ -128,15 +139,22 @@ impl TestFixRemote {
 			len: 0,
 			lenOff: 0,
 			data: UnsafeCell::new(vec![0u8;0]),
+            pend_read: vec![],
+            pend_accept: vec![],
 		}
 	}
+
+    pub fn accept(&mut self)
+    {
+        self.pend_accept.pop().unwrap()();
+    }
 }
 
-pub fn fix_parts<'a>(remote: &'a RefCell<TestFixRemote>) -> (TestFixTransport<'a>, TestFixEnvironment, TestFixApplication)
+pub fn fix_parts(remote: Rc<RefCell<TestFixRemote>>) -> (TestFixTransport, TestFixEnvironment, TestFixApplication)
 {
     let tft = TestFixTransport { remote: remote, };
     let env = TestFixEnvironment::new();
-    let fix_app = TestFixApplication { message: TestFixMessage::new() };
+    let fix_app = TestFixApplication { requests: vec![], message: TestFixMessage::new() };
     (tft, env, fix_app)
 }
 
@@ -167,11 +185,13 @@ impl FixTimerFactory for TestFixEnvironment
 	}
 }
 
-impl<'b> FixTransport for TestFixTransport<'b>
+impl FixTransport for TestFixTransport
 {
-	fn connect<F>(self, mut on_success: F) where F: FnOnce(Self) -> (), Self: Sized
+	fn connect<F>(&mut self, mut on_success: F) where F: FnOnce(&mut Self) -> ()
 	{
-		on_success(self);
+       //self.remote.borrow_mut().pend_accept.push(box move || {
+       //    on_success(self);
+       //});
 	}
 
 	fn view(&self) -> &[u8] {
@@ -196,17 +216,19 @@ impl FixApplication for TestFixApplication
 {
     type FIX_STREAM = TestFixMessage;
 
-    fn on_request<T, S>(&mut self, msg_type: FixMsgType<T>, svs: &mut S)
-    where T: FixAppMsgType, S: FixService
+    fn on_request<S>(&mut self, r: SessionRequest, svs: &mut S)
+    where S: FixService
     {
+        self.requests.push(r);
     }
 
     fn on_message_pending<C>(&mut self, in_ch: &mut C)
         where C: FixInChannel
     {
+        in_ch.read_fix_message(self);
     }
 
-    fn app_handler(&mut self) -> &mut Self::FIX_STREAM
+    fn in_stream(&mut self) -> &mut Self::FIX_STREAM
     {
         &mut self.message
     }
@@ -216,8 +238,8 @@ impl FixStream for TestFixRemote
 {
 	type MSG_TYPES = ();
 	
-    fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
-	{
+	fn fix_message_start(&mut self, msg_type: FixMsgType<Self::MSG_TYPES>, is_replayable: bool)
+    {
 		self.sum = 0; // start accumulation of checksum
 		
 		// version first
